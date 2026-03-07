@@ -1,32 +1,44 @@
 <div align="center">
-  <h1>ReVanced Xposed Spotify</h1>
+  <h1>Kallme-Xposed</h1>
   <br>
 </div>
 
 **ReVanced LSPosed module by ChsBuffer, just for Spotify.**  
 >[!IMPORTANT]  
 > - This is **NOT an official ReVanced project**, do not ask the ReVanced developers for help.
-> - **Root access** is strictly **required** to use this module!
-
 ---
-### The Impact of Server-Side Consistency Checks
 
-Starting from late January 2026, the server has implemented a new verification logic 
-that enforces strict **dual-sync checks** for account attributes and configuration data. 
-The server now cross-references your account attributes (such as Subscription Type) and 
-core configuration data in real-time. If client-side modifications or suppressed logics are detected, 
-the server will immediately forcibly terminate the session.
+> [!WARNING]  
+> **Development Status:** This project is currently in active development. Features are being tested to ensure account safety and stability before the full source is released.
+------------
 
-**To prevent frequent logouts, we have adjusted the patches to prioritize usability. **
+## 🔍 The Project Mission
+This patch utilizes many of the same tactics as the legacy ReVanced patches—specifically client attribute spoofing and **DexKit** for high-speed reading of obfuscated libraries—but with fixes for glaring stability issues and several new qol additions.
 
-**Consequently:**
+### Research & Findings
+* **Blacklists:** Spotify performs periodic checks. If the client reports "Premium" attributes while the server database sees a "Free" account, the server issues a `pushka-tokens` delete command, revoking the session token.
+* **The ReVanced Approach:** Current popular patches set attributes to "Free" and "On-Demand." This prevents blacklisting but often leaves ads intact.
+* **My Approach:** Auto-closing pop-up ads and, if necessary, programmatically applying a 14-day trial state to the account to maintain functionality without triggering the blacklist.
+-------------
 
-- Audio and visual ads will now appear.
-- Non-functional Download button now visible.
 
-Remember: if you are not paying for the product, **you** are the product.
 
+## 🛠 Development Logs
+
+| Date | Status Update |
+| :--- | :--- |
+| **Mar 06, 2026** | Added attribute spoofing; implemented custom lyrics patch; video ads remain the only outlier. |
+| **Mar 02, 2026** | Identified ad-blocking as the primary stability fix. Canvases are currently optional/disabled. |
+| **Mar 01, 2026** | Refined Protobuf and Map modification. *Note: "Something went wrong" on the homepage is fixed.* |
+| **Feb 28, 2026** | Successfully achieved memory writing; discovering new offsets for free attribute forcing. |
+| **Feb 25, 2026** | Confirmed server-side license validation logic and the 5-minute blacklist trigger. |
+-------------
+
+## ⚠️ Known Issues
+* **Video Ads:** These are handled via a different stream and are not yet suppressed.
+* **Canvases:** Functionality is currently inconsistent and may be disabled by preference.
 ---
+
 ### Regarding alleged “new working Spotify mods”:
 
 Recent claims that _Nibrut, Obito, AndroForever and Shizuku_ provide functioning Spotify mods are incorrect.  
@@ -43,15 +55,21 @@ There is something you need to know in order to use it, so find it on the xManag
 
 ## Patches
 
-### Spotify
-- Unlock Spotify Premium
-- Sanitize sharing links
+## ✨ Features (Current Build)
+* **Advanced Spoofing:** Specifically designed to fix issues for devices that have been blacklisted multiple times.
+* **"Who Sampled" Integration:** Deep-dive into song origins directly within the app.
+* **Custom Lyrics Patch:** A beautiful, real-time lyrics UI that mimics the Apple Music aesthetic.
+* **Playlist Pinning:** Enhanced organization allowing you to pin any playlist for quick access.
+* **Improved Navigation:** A modified and streamlined Navbar for better UX.
+* **Ad Suppression:** Successfully blocks most UI and audio ads (Video ads are currently a work-in-progress).
+-------------
 
-## Downloads
-- **Release build**: [Download](https://github.com/chsbuffer/ReVancedXposed_Spotify/releases/latest)
+## 🚀 Roadmap
+- [ ] Fully reverse-engineer the attribute reporting library.
+- [ ] Implement video ad suppression.
+- [ ] **Open Source Release** (Once the bypass is verified as "Blacklist-Proof").`
+---
 
-> [!NOTE]  
-> The package name and signature of this build are different every day. You don't have to reinstall it every day.
 
 ## ⭐ Credits
 
