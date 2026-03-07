@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#121212"
+    android:clipToPadding="false"
+    android:paddingBottom="40dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Kallme-Xposed"
+            android:textColor="#FFFFFF"
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="24dp"
+            android:gravity="center" />
+
+        <!-- CORE FIXES -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Core Modules" android:textColor="#1ED760" android:textStyle="bold" android:layout_marginBottom="8dp" android:layout_marginStart="4dp"/>
+        <androidx.cardview.widget.CardView android:layout_width="match_parent" android:layout_height="wrap_content" app:cardBackgroundColor="#1E1E1E" app:cardCornerRadius="12dp" android:layout_marginBottom="20dp">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
+                <Switch android:id="@+id/switchPremium" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Unlock Premium Features" android:textColor="#FFF" android:layout_marginBottom="12dp"/>
+                <Switch android:id="@+id/switchAudioAds" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Block Audio Ads (Nuclear)" android:textColor="#FFF" android:layout_marginBottom="12dp"/>
+                <Switch android:id="@+id/switchVisualAds" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Block Visual/UI Ads" android:textColor="#FFF" android:layout_marginBottom="12dp"/>
+                <Switch android:id="@+id/switchUiFixes" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Restore Artist Pages &amp; UI" android:textColor="#FFF"/>
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
+        <!-- PRIVACY & SPOOFING -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Privacy &amp; Stealth" android:textColor="#1ED760" android:textStyle="bold" android:layout_marginBottom="8dp" android:layout_marginStart="4dp"/>
+        <androidx.cardview.widget.CardView android:layout_width="match_parent" android:layout_height="wrap_content" app:cardBackgroundColor="#1E1E1E" app:cardCornerRadius="12dp" android:layout_marginBottom="20dp">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
+                <Switch android:id="@+id/switchTelemetry" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Block Telemetry &amp; Snitch" android:textColor="#FFF" android:layout_marginBottom="12dp"/>
+                <Switch android:id="@+id/switchSpoofer" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Device Spoofer (Pixel 7)" android:textColor="#FFF" android:layout_marginBottom="12dp"/>
+                <Switch android:id="@+id/switchSanitize" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Sanitize Sharing Links" android:textColor="#FFF" />
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
+        <!-- INTERFACE ADDITIONS -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Interface Injections" android:textColor="#1ED760" android:textStyle="bold" android:layout_marginBottom="8dp" android:layout_marginStart="4dp"/>
+        <androidx.cardview.widget.CardView android:layout_width="match_parent" android:layout_height="wrap_content" app:cardBackgroundColor="#1E1E1E" app:cardCornerRadius="12dp" android:layout_marginBottom="20dp">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
+                <Switch android:id="@+id/switchBehindTheTracks" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Behind The Tracks (Genius)" android:textColor="#FFF" android:layout_marginBottom="12dp"/>
+                <Switch android:id="@+id/switchLiveRadar" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Live Radar (Tour Dates)" android:textColor="#FFF" android:layout_marginBottom="12dp"/>
+                <Switch android:id="@+id/switchFrostedNav" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Frosted Glass Navigation" android:textColor="#FFF" android:layout_marginBottom="12dp"/>
+                <Switch android:id="@+id/switchNavbarPinner" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Navbar Playlist Pinner" android:textColor="#FFF" android:layout_marginBottom="12dp"/>
+                <Switch android:id="@+id/switchWidgets" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Fix 3rd Party Widgets" android:textColor="#FFF" />
+            </LinearLayout>
+            <Switch android:id="@+id/switchWhoSampled" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Sonic Lineage (WhoSampled)" android:textColor="#FFF" android:layout_marginBottom="12dp"/>
+        </androidx.cardview.widget.CardView>
+
+        <!-- BEAUTIFUL LYRICS -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Beautiful Lyrics Engine" android:textColor="#1ED760" android:textStyle="bold" android:layout_marginBottom="8dp" android:layout_marginStart="4dp"/>
+        <androidx.cardview.widget.CardView android:layout_width="match_parent" android:layout_height="wrap_content" app:cardBackgroundColor="#1E1E1E" app:cardCornerRadius="12dp" android:layout_marginBottom="20dp">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
+                <Switch android:id="@+id/switchLyrics" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Enable Custom Lyrics" android:textColor="#FFF" android:layout_marginBottom="12dp" android:textStyle="bold"/>
+                <Switch android:id="@+id/switchIsland" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Dynamic Island Header" android:textColor="#FFF" android:layout_marginBottom="12dp"/>
+                <Switch android:id="@+id/switchBackground" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Animated Orb Background" android:textColor="#FFF" android:layout_marginBottom="12dp"/>
+                <Switch android:id="@+id/switchSweep" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Karaoke Sweep Animation" android:textColor="#FFF" android:layout_marginBottom="12dp"/>
+                <Switch android:id="@+id/switchRhymes" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Rhyme Swell Highlight" android:textColor="#FFF" android:layout_marginBottom="20dp"/>
+
+                <!-- Sliders -->
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">
+                    <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Text Size" android:textColor="#B3B3B3"/>
+                    <TextView android:id="@+id/tvTextSizeVal" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="26 sp" android:textColor="#1ED760" android:textStyle="bold"/>
+                </LinearLayout>
+                <SeekBar android:id="@+id/seekTextSize" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="16dp" android:progressTint="#1ED760" android:thumbTint="#1ED760"/>
+
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="4dp">
+                    <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Animation Speed" android:textColor="#B3B3B3"/>
+                    <TextView android:id="@+id/tvOrbSpeedVal" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="1.0x" android:textColor="#1ED760" android:textStyle="bold"/>
+                </LinearLayout>
+                <SeekBar android:id="@+id/seekSpeed" android:layout_width="match_parent" android:layout_height="wrap_content" android:progressTint="#1ED760" android:thumbTint="#1ED760"/>
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
+        <!-- THEME ENGINE -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Theme Engine" android:textColor="#1ED760" android:textStyle="bold" android:layout_marginBottom="8dp" android:layout_marginStart="4dp"/>
+        <androidx.cardview.widget.CardView android:layout_width="match_parent" android:layout_height="wrap_content" app:cardBackgroundColor="#1E1E1E" app:cardCornerRadius="12dp" android:layout_marginBottom="24dp">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
+                <Switch android:id="@+id/switchAmoled" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="AMOLED Pure Black" android:textColor="#FFF" android:layout_marginBottom="12dp"/>
+                <Switch android:id="@+id/switchTheme" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Custom Accent Color" android:textColor="#FFF" android:layout_marginBottom="16dp"/>
+                <View android:id="@+id/viewColorPreview" android:layout_width="match_parent" android:layout_height="40dp" android:layout_marginBottom="16dp" android:background="#1ED760"/>
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Red" android:textColor="#B3B3B3"/>
+                <SeekBar android:id="@+id/seekRed" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="255" android:progressTint="#FF4444" android:thumbTint="#FF4444" android:layout_marginBottom="8dp"/>
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Green" android:textColor="#B3B3B3"/>
+                <SeekBar android:id="@+id/seekGreen" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="255" android:progressTint="#1ED760" android:thumbTint="#1ED760" android:layout_marginBottom="8dp"/>
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Blue" android:textColor="#B3B3B3"/>
+                <SeekBar android:id="@+id/seekBlue" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="255" android:progressTint="#4444FF" android:thumbTint="#4444FF"/>
+                <Switch android:id="@+id/switchChroma" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Chroma Canvas (Global Ambient Background)" android:textColor="#FFF" android:layout_marginBottom="12dp"/>
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
+        <Button
+            android:id="@+id/btnApply"
+            android:layout_width="match_parent"
+            android:layout_height="55dp"
+            android:text="FORCE STOP APP TO APPLY"
+            android:textColor="#000000"
+            android:textStyle="bold"
+            android:backgroundTint="#1ED760"
+            android:layout_marginBottom="20dp"/>
+    </LinearLayout>
+</ScrollView>
