@@ -140,14 +140,23 @@ abstract class BaseHook(private val app: Application, val lpparam: LoadPackagePa
     abstract val hooks: Array<HookFunction>
     private val appliedHooks = mutableSetOf<HookFunction>()
     private val failedHooks = mutableListOf<HookFunction>()
-
     // cache
     private val moduleRel = BuildConfig.COMMIT_HASH
     private var cache = SharedPrefCache(app)
+
     private var dexkit = run {
         System.loadLibrary("dexkit")
         DexKitCacheBridge.init(cache)
-        DexKitCacheBridge.create("", lpparam.appInfo.sourceDir)
+
+        val cachePath = app.cacheDir.absolutePath
+        val apkPath = app.applicationInfo.sourceDir ?: lpparam.appInfo.sourceDir
+
+        try {
+            DexKitCacheBridge.create(cachePath, apkPath)
+        } catch (e: Throwable) {
+            XposedBridge.log("V's Bypass: DexKit initialization failed! ${e.message}")
+            throw e
+        }
     }
 
     override fun Hook() {
@@ -181,7 +190,7 @@ abstract class BaseHook(private val app: Application, val lpparam: LoadPackagePa
         if (!isCached) {
             cache.clearAll()
             cache.put("id", id)
-            Utils.showToastLong("ReVanced Xposed is initializing, please wait...")
+            Utils.showToastLong("Kallme-Xposed is starting")
         }
     }
 
