@@ -8,6 +8,10 @@
 > - This is **NOT an official ReVanced project**, do not ask the ReVanced developers for help.
 ---
 
+>[!IMPORTANT]
+>As of **current** testing accounts get blacklisted at about midnight, its likely thats when they do checks for the on demand trial that i force.
+>HOWEVER, if youre fine with making a new account theres downloads and **NO ADS**
+
 > [!WARNING]  
 > **Development Status:** This project is currently in active development. Features are being tested to ensure account safety and stability before the full source is released.
 ------------
@@ -27,6 +31,7 @@ This patch utilizes many of the same tactics as the legacy ReVanced patches—sp
 
 | Date | Status Update |
 | :--- | :--- |
+| **Mar 08, 2026** | Added track dumping that auto dumps tracks for offline playability no matter what, still low quality but good. |
 | **Mar 06, 2026** | Added attribute spoofing; implemented custom lyrics patch; video ads remain the only outlier. |
 | **Mar 02, 2026** | Identified ad-blocking as the primary stability fix. Canvases are currently optional/disabled. |
 | **Mar 01, 2026** | Refined Protobuf and Map modification. *Note: "Something went wrong" on the homepage is fixed.* |
@@ -37,6 +42,7 @@ This patch utilizes many of the same tactics as the legacy ReVanced patches—sp
 ## ⚠️ Known Issues
 * **Video Ads:** These are handled via a different stream and are not yet suppressed.
 * **Canvases:** Functionality is currently inconsistent and may be disabled by preference.
+* **Blacklists** This is the last issue and the most difficult, my eta is a week or 2 before its solved
 ---
 
 ### Regarding alleged “new working Spotify mods”:
@@ -62,12 +68,13 @@ There is something you need to know in order to use it, so find it on the xManag
 * **Playlist Pinning:** Enhanced organization allowing you to pin any playlist for quick access.
 * **Improved Navigation:** A modified and streamlined Navbar for better UX.
 * **Ad Suppression:** Successfully blocks most UI and audio ads (Video ads are currently a work-in-progress).
+* **Track Dumping** When you play a song the mod auto records and saves it, it only records from spotify and is 90% of the quality. 
 -------------
 
 ## 🚀 Roadmap
 - [ ] Fully reverse-engineer the attribute reporting library.
 - [ ] Implement video ad suppression.
-- [ ] **Open Source Release** (Once the bypass is verified as "Blacklist-Proof").`
+- [x] **Open Source Release** (Once the bypass is verified as "Blacklist-Proof").`
 ---
 
 
