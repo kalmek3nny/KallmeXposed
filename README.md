@@ -9,8 +9,7 @@
 ---
 
 >[!IMPORTANT]
->As of **current** testing accounts get blacklisted at about midnight, its likely thats when they do checks for the on demand trial that i force.
->HOWEVER, if youre fine with making a new account theres downloads and **NO ADS**
+>With my latest patch its been 2 days with no ban, however it seems to only work with new accounts i will do more testing and try to get it to work with old accounts but the patch is almost done
 
 > [!WARNING]  
 > **Development Status:** This project is currently in active development. Features are being tested to ensure account safety and stability before the full source is released.
