@@ -30,6 +30,7 @@ This patch utilizes many of the same tactics as the legacy ReVanced patches—sp
 
 | Date | Status Update |
 | :--- | :--- |
+| **Mar 10, 2026** | With the current patch making a new accoutn gives it on demand which gives downlaods, im trying to remove ads for old accounts but itll take a while, once i finish that ill upload the newest src and packages
 | **Mar 08, 2026** | Added track dumping that auto dumps tracks for offline playability no matter what, still low quality but good. |
 | **Mar 06, 2026** | Added attribute spoofing; implemented custom lyrics patch; video ads remain the only outlier. |
 | **Mar 02, 2026** | Identified ad-blocking as the primary stability fix. Canvases are currently optional/disabled. |
