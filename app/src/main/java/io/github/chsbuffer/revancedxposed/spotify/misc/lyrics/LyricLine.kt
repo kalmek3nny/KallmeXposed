@@ -5,5 +5,11 @@ import android.widget.TextView
 data class LyricLine(
     val timeMs: Long,
     val text: String,
-    var view: TextView? = null
-)
+    // Use @Transient so if you ever serialize this, the View is ignored.
+    @Transient var view: TextView? = null
+) {
+    // Helper to safely detach the view to prevent memory leaks during UI rebuilds
+    fun detachView() {
+        view = null
+    }
+}

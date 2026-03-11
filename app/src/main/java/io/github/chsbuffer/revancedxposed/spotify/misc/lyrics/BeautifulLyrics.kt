@@ -25,6 +25,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
 import android.view.animation.DecelerateInterpolator
+import android.view.animation.PathInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -35,17 +36,19 @@ import de.robv.android.xposed.XSharedPreferences
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import io.github.chsbuffer.revancedxposed.MainActivity
+import kotlin.math.PI
+import kotlin.math.sin
 import kotlin.math.pow
 
 class BeautifulLyrics(private val app: Application) {
 
-    private val LYRICS_ACTIVITY =
-        "com.spotify.lyrics.fullscreenview.page.LyricsFullscreenPageActivity"
+    private val LYRICS_ACTIVITY = "com.spotify.lyrics.fullscreenview.page.LyricsFullscreenPageActivity"
     private val NPV_ACTIVITY = "com.spotify.nowplaying.musicinstallation.NowPlayingActivity"
 
     private var currentActivity: Activity? = null
     private var isNpvMode = false
     private var userInitiatedClose = false
+
     private var prefEnableIsland = true
     private var prefEnableBackground = true
     private var prefEnableSweep = true
@@ -60,8 +63,20 @@ class BeautifulLyrics(private val app: Application) {
     private var currentPositionMs: Long = 0
     private var lastUpdateTimeMs: Long = 0
 
-    private var albumColorTop: Int = Color.parseColor("#2C2C2C")
-    private var albumColorBottom: Int = Color.parseColor("#0A0A0A")
+    private val fluidEaseOut = PathInterpolator(0.22f, 1f, 0.36f, 1f)
+    private val fluidSpring = PathInterpolator(0.34f, 1.15f, 0.3f, 1f)
+
+    private var colorTopLeft: Int = Color.parseColor("#1A1A1A")
+    private var colorTopRight: Int = Color.parseColor("#2A2A2A")
+    private var colorBottomLeft: Int = Color.parseColor("#0A0A0A")
+    private var colorBottomRight: Int = Color.parseColor("#111111")
+
+    private var dynamicOutlineColor: Int = Color.parseColor("#33FFFFFF")
+
+    private var colorActiveText: Int = Color.WHITE
+    private var colorInactiveText: Int = Color.parseColor("#888888")
+    private var colorActiveAdlib: Int = Color.parseColor("#B3B3B3")
+    private var colorInactiveAdlib: Int = Color.parseColor("#555555")
 
     private var currentLyrics: List<LyricLine>? = null
     private var activeLineIndex: Int = -1
@@ -70,40 +85,20 @@ class BeautifulLyrics(private val app: Application) {
     private var activeContainer: FrameLayout? = null
     private var activeLyricsContainer: LinearLayout? = null
     private var activeScrollView: ScrollView? = null
-    private var activeBackgroundView: AnimatedBackgroundView? = null
+    private var activeBackgroundView: FluidMeshBackgroundView? = null
     private var scrollAnimator: ObjectAnimator? = null
 
     private var islandTitleView: TextView? = null
     private var islandSubtitleView: TextView? = null
     private var islandArtView: ImageView? = null
+    private var activeIslandPlayPauseView: View? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // New Color Variables for Text Tinting
-    private var colorActiveText: Int = Color.WHITE
-    private var colorInactiveText: Int = Color.parseColor("#888888")
-    private var colorActiveAdlib: Int = Color.parseColor("#B3B3B3")
-    private var colorInactiveAdlib: Int = Color.parseColor("#555555")
-
-    // View Tracker for the Play/Pause Button
-    private var activeIslandPlayPauseView: View? = null
-
-    // Helper to send global media commands to Spotify
     private fun sendMediaEvent(context: Context, code: Int) {
-        val audioManager =
-            context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
-        audioManager.dispatchMediaKeyEvent(
-            android.view.KeyEvent(
-                android.view.KeyEvent.ACTION_DOWN,
-                code
-            )
-        )
-        audioManager.dispatchMediaKeyEvent(
-            android.view.KeyEvent(
-                android.view.KeyEvent.ACTION_UP,
-                code
-            )
-        )
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        audioManager.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, code))
+        audioManager.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, code))
     }
 
     private val syncRunnable = object : Runnable {
@@ -119,7 +114,7 @@ class BeautifulLyrics(private val app: Application) {
                 activeBackgroundView?.invalidate()
                 if (fetchState == 1) syncLyricsToPlayback()
             } catch (e: Exception) {
-                Log.e("V_SONAR", "Lyrics Injection Error: ${e.message}")
+                Log.e("V_SONAR", "Lyrics Sync Error: ${e.message}")
             }
             mainHandler.postDelayed(this, 16)
         }
@@ -138,19 +133,16 @@ class BeautifulLyrics(private val app: Application) {
         if (prefs.getBoolean("enable_lyrics", true)) {
             registerLifecycleCallbacks()
             hookMediaSession(classLoader)
-            hookPreventAutoClose(classLoader) // <-- Add this hook
+            hookPreventAutoClose(classLoader)
 
             val receiver = object : BroadcastReceiver() {
                 override fun onReceive(context: Context, intent: Intent) {
                     if (intent.action == "io.github.chsbuffer.revancedxposed.LIVE_UPDATE") {
                         prefEnableIsland = intent.getBooleanExtra("enable_island", prefEnableIsland)
-                        prefEnableBackground =
-                            intent.getBooleanExtra("enable_background", prefEnableBackground)
+                        prefEnableBackground = intent.getBooleanExtra("enable_background", prefEnableBackground)
                         prefEnableSweep = intent.getBooleanExtra("enable_sweep", prefEnableSweep)
-                        prefTextSize =
-                            intent.getIntExtra("text_size", prefTextSize.toInt()).toFloat()
-                        prefAnimSpeed =
-                            intent.getIntExtra("anim_speed", prefAnimSpeed.toInt()).toFloat()
+                        prefTextSize = intent.getIntExtra("text_size", prefTextSize.toInt()).toFloat()
+                        prefAnimSpeed = intent.getIntExtra("anim_speed", prefAnimSpeed.toInt()).toFloat()
                         mainHandler.post { applySettingsToUI() }
                     }
                 }
@@ -168,52 +160,33 @@ class BeautifulLyrics(private val app: Application) {
     private fun hookPreventAutoClose(classLoader: ClassLoader) {
         try {
             val lyricsActivityClass = XposedHelpers.findClass(LYRICS_ACTIVITY, classLoader)
-
-            // Safely catch Android 10+ Gestures and Hardware Back buttons
-            XposedBridge.hookAllMethods(
-                lyricsActivityClass,
-                "dispatchKeyEvent",
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        val event = param.args[0] as android.view.KeyEvent
-                        if (event.keyCode == android.view.KeyEvent.KEYCODE_BACK && event.action == android.view.KeyEvent.ACTION_UP) {
-                            userInitiatedClose = true
-                        }
-                    }
-                })
-
-            XposedBridge.hookAllMethods(
-                lyricsActivityClass,
-                "onBackPressed",
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        userInitiatedClose = true
-                    }
-                })
-
-            XposedBridge.hookAllMethods(lyricsActivityClass, "finish", object : XC_MethodHook() {
+            XposedBridge.hookAllMethods(lyricsActivityClass, "dispatchKeyEvent", object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
-                    if (!userInitiatedClose) {
-                        // Block Spotify from closing it automatically on song change
-                        param.result = null
+                    val event = param.args[0] as android.view.KeyEvent
+                    if (event.keyCode == android.view.KeyEvent.KEYCODE_BACK && event.action == android.view.KeyEvent.ACTION_UP) {
+                        userInitiatedClose = true
                     }
                 }
             })
-        } catch (e: Exception) {
-            Log.e("V_SONAR", "Failed to hook Lyrics Activity close: ${e.message}")
-        }
+            XposedBridge.hookAllMethods(lyricsActivityClass, "onBackPressed", object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) { userInitiatedClose = true }
+            })
+            XposedBridge.hookAllMethods(lyricsActivityClass, "finish", object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    if (!userInitiatedClose) param.result = null
+                }
+            })
+        } catch (e: Exception) {}
     }
 
     private fun applySettingsToUI() {
-        activeBackgroundView?.visibility =
-            if (prefEnableBackground) View.VISIBLE else View.INVISIBLE
+        activeBackgroundView?.visibility = if (prefEnableBackground) View.VISIBLE else View.INVISIBLE
         if (fetchState == 1) buildLyricsUI()
     }
 
     private fun hookMediaSession(classLoader: ClassLoader) {
         try {
-            val mediaSessionClass =
-                XposedHelpers.findClass("android.media.session.MediaSession", classLoader)
+            val mediaSessionClass = XposedHelpers.findClass("android.media.session.MediaSession", classLoader)
 
             XposedBridge.hookAllMethods(mediaSessionClass, "setMetadata", object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) {
@@ -233,11 +206,8 @@ class BeautifulLyrics(private val app: Application) {
                     }
 
                     if (title != currentTrack || artist != currentArtist) {
-                        currentTrack = title
-                        currentArtist = artist
-                        currentAlbum = album
-                        currentPositionMs = 0
-                        lastUpdateTimeMs = SystemClock.elapsedRealtime()
+                        currentTrack = title; currentArtist = artist; currentAlbum = album
+                        currentPositionMs = 0; lastUpdateTimeMs = SystemClock.elapsedRealtime()
 
                         mainHandler.post { updateIslandUI() }
                         fetchLyrics(title, artist)
@@ -245,81 +215,100 @@ class BeautifulLyrics(private val app: Application) {
                 }
             })
 
-            XposedBridge.hookAllMethods(
-                mediaSessionClass,
-                "setPlaybackState",
-                object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val state = param.args[0] as? PlaybackState ?: return
-                        val wasPlaying = isPlaying
-                        isPlaying = state.state == PlaybackState.STATE_PLAYING
-                        currentPositionMs = state.position
-                        lastUpdateTimeMs = SystemClock.elapsedRealtime()
+            XposedBridge.hookAllMethods(mediaSessionClass, "setPlaybackState", object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    val state = param.args[0] as? PlaybackState ?: return
+                    val wasPlaying = isPlaying
+                    isPlaying = state.state == PlaybackState.STATE_PLAYING
+                    currentPositionMs = state.position
+                    lastUpdateTimeMs = SystemClock.elapsedRealtime()
 
-                        // Redraw the Play/Pause button if the state changed!
-                        if (wasPlaying != isPlaying) {
-                            mainHandler.post { activeIslandPlayPauseView?.invalidate() }
-                        }
-                    }
-                })
-        } catch (e: Exception) {
-            Log.e("V_SONAR", "MediaSession Hook Failed: ${e.message}")
-        }
+                    if (wasPlaying != isPlaying) mainHandler.post { activeIslandPlayPauseView?.invalidate() }
+                }
+            })
+        } catch (e: Exception) {}
     }
 
     private fun extractAppleMusicColors(bitmap: Bitmap) {
         try {
-            val thumb = Bitmap.createScaledBitmap(bitmap, 1, 1, true)
-            val avgColor = thumb.getPixel(0, 0)
+            val thumb = Bitmap.createScaledBitmap(bitmap, 3, 3, true)
+            val pixels = IntArray(9)
+            thumb.getPixels(pixels, 0, 3, 0, 0, 3, 3)
+
+            var rSum = 0; var gSum = 0; var bSum = 0
+            for (p in pixels) { rSum += Color.red(p); gSum += Color.green(p); bSum += Color.blue(p) }
+            val avgColor = Color.rgb(rSum / 9, gSum / 9, bSum / 9)
+
+            var maxDist = -1
+            var accentColor = avgColor
+            for (p in pixels) {
+                val dist = Math.abs(Color.red(p) - Color.red(avgColor)) + Math.abs(Color.green(p) - Color.green(avgColor)) + Math.abs(Color.blue(p) - Color.blue(avgColor))
+                if (dist > maxDist) { maxDist = dist; accentColor = p }
+            }
             thumb.recycle()
+
+            val lum = 0.299 * Color.red(avgColor) + 0.587 * Color.green(avgColor) + 0.114 * Color.blue(avgColor)
+            val outHsv = FloatArray(3)
+            Color.colorToHSV(accentColor, outHsv)
+
+            val newOutlineColor = if (lum > 127) {
+                outHsv[1] = (outHsv[1] * 1.5f).coerceAtMost(1f)
+                outHsv[2] = 0.3f
+                Color.HSVToColor(200, outHsv)
+            } else {
+                outHsv[1] = (outHsv[1] * 0.6f).coerceAtMost(1f)
+                outHsv[2] = 0.95f
+                Color.HSVToColor(220, outHsv)
+            }
 
             val hsv = FloatArray(3)
             Color.colorToHSV(avgColor, hsv)
 
-            // --- TEXT COLOR TINTING ---
-            hsv[1] = 0.08f // 8% saturation for a subtle white tint
-            hsv[2] = 1.0f  // 100% brightness
+            hsv[1] = 0.05f; hsv[2] = 1.0f
             colorActiveText = Color.HSVToColor(hsv)
-
-            hsv[1] = 0.15f
-            hsv[2] = 0.70f // Gray tinted
+            hsv[1] = 0.15f; hsv[2] = 0.75f
             colorInactiveText = Color.HSVToColor(hsv)
-
-            hsv[1] = 0.12f
-            hsv[2] = 0.85f // Adlib tinted
+            hsv[1] = 0.10f; hsv[2] = 0.85f
             colorActiveAdlib = Color.HSVToColor(hsv)
-
-            hsv[1] = 0.20f
-            hsv[2] = 0.55f // Adlib inactive tinted
+            hsv[1] = 0.20f; hsv[2] = 0.60f
             colorInactiveAdlib = Color.HSVToColor(hsv)
 
-            // --- BACKGROUND COLOR ---
-            Color.colorToHSV(avgColor, hsv)
-            hsv[1] = (hsv[1] * 1.3f).coerceIn(0f, 1f)
-            hsv[2] = hsv[2].coerceAtMost(0.40f)
-            val newTop = Color.HSVToColor(hsv)
+            val baseHue = hsv[0]
+            val baseSat = hsv[1].coerceIn(0.5f, 1f)
 
-            hsv[2] = hsv[2].coerceAtMost(0.15f)
-            val newBottom = Color.HSVToColor(hsv)
+            hsv[0] = baseHue; hsv[1] = baseSat; hsv[2] = 0.90f; val c1 = Color.HSVToColor(hsv)
+            hsv[0] = (baseHue + 40f) % 360f; hsv[1] = baseSat * 0.9f; hsv[2] = 0.80f; val c2 = Color.HSVToColor(hsv)
+            hsv[0] = (baseHue - 30f + 360f) % 360f; hsv[1] = baseSat; hsv[2] = 0.70f; val c3 = Color.HSVToColor(hsv)
+            hsv[0] = (baseHue + 15f) % 360f; hsv[1] = baseSat * 1.0f; hsv[2] = 0.60f; val c4 = Color.HSVToColor(hsv)
 
             mainHandler.post {
-                if (albumColorTop == Color.parseColor("#2C2C2C")) {
-                    activeBackgroundView?.topColor = newTop
-                    activeBackgroundView?.bottomColor = newBottom
-                } else {
-                    activeBackgroundView?.animateColorsTo(newTop, newBottom)
+                activeBackgroundView?.animateColorsTo(c1, c2, c3, c4)
+                colorTopLeft = c1; colorTopRight = c2; colorBottomLeft = c3; colorBottomRight = c4
+
+                val aOut = android.animation.ValueAnimator.ofArgb(dynamicOutlineColor, newOutlineColor).apply {
+                    addUpdateListener {
+                        dynamicOutlineColor = it.animatedValue as Int
+
+                        val backBtn = activeContainer?.findViewWithTag<FrameLayout>("BACK_BTN")
+                        (backBtn?.background as? GradientDrawable)?.setStroke(3, dynamicOutlineColor)
+
+                        val island = activeContainer?.findViewWithTag<LinearLayout>("ISLAND_TAB")
+                        (island?.background as? GradientDrawable)?.setStroke(3, dynamicOutlineColor)
+                    }
                 }
-                albumColorTop = newTop
-                albumColorBottom = newBottom
+                aOut.duration = 1500
+                aOut.interpolator = DecelerateInterpolator(1.5f)
+                aOut.start()
             }
-        } catch (e: Exception) {
-        }
+        } catch (e: Exception) {}
     }
 
     private fun fetchLyrics(track: String, artist: String) {
         fetchState = 0
+        currentLyrics?.forEach { it.detachView() }
         currentLyrics = null
         activeLineIndex = -1
+
         mainHandler.post {
             activeContainer?.visibility = View.VISIBLE
             updateUIState("Loading $track...")
@@ -329,12 +318,10 @@ class BeautifulLyrics(private val app: Application) {
             mainHandler.post {
                 if (lines == null || lines.isEmpty()) {
                     fetchState = 2
-                    activeContainer?.visibility = View.VISIBLE
                     updateUIState("No lyrics available")
                 } else {
                     fetchState = 1
                     currentLyrics = lines
-                    activeContainer?.visibility = View.VISIBLE
                     buildLyricsUI()
                 }
             }
@@ -348,7 +335,7 @@ class BeautifulLyrics(private val app: Application) {
                 val activityName = activity::class.java.name
 
                 if (activityName == LYRICS_ACTIVITY) {
-                    userInitiatedClose = false // <-- Reset the close flag when the screen opens
+                    userInitiatedClose = false
                     isNpvMode = false
                     mainHandler.removeCallbacks(syncRunnable)
                     mainHandler.post(syncRunnable)
@@ -367,48 +354,34 @@ class BeautifulLyrics(private val app: Application) {
                     currentActivity = null
                 }
             }
-
             override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
             override fun onActivityStarted(activity: Activity) {}
             override fun onActivityStopped(activity: Activity) {}
             override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
-            override fun onActivityDestroyed(activity: Activity) {}
+            override fun onActivityDestroyed(activity: Activity) {
+                currentLyrics?.forEach { it.detachView() }
+            }
         })
     }
 
     private fun ensureNpvMiniCardInjected() {
         val activity = currentActivity ?: return
         val root = activity.findViewById<ViewGroup>(R.id.content) ?: return
-
-        val widgetsId =
-            activity.resources.getIdentifier("widgets_container", "id", activity.packageName)
-                .takeIf { it != 0 } ?: activity.resources.getIdentifier(
-                "widgets_container",
-                "id",
-                "com.spotify.music"
-            )
-
+        val widgetsId = activity.resources.getIdentifier("widgets_container", "id", activity.packageName).takeIf { it != 0 } ?: activity.resources.getIdentifier("widgets_container", "id", "com.spotify.music")
         val widgetsContainer = activity.findViewById<ViewGroup>(widgetsId) ?: return
         val verticalLayout = widgetsContainer.getChildAt(0) as? ViewGroup ?: return
-        var cardContainer =
-            verticalLayout.findViewWithTag<FrameLayout>("BEAUTIFUL_LYRICS_MINI_CARD")
 
-        if (cardContainer == null) {
-            injectNpvMiniCard(activity, verticalLayout)
-        }
+        var cardContainer = verticalLayout.findViewWithTag<FrameLayout>("BEAUTIFUL_LYRICS_MINI_CARD")
+
+        if (cardContainer == null) injectNpvMiniCard(activity, verticalLayout)
 
         for (i in 0 until verticalLayout.childCount) {
             val child = verticalLayout.getChildAt(i)
             if (child.tag == "BEAUTIFUL_LYRICS_MINI_CARD") continue
-
             if (child.javaClass.simpleName.contains("ComposeView") && i <= 2) {
                 if (child.visibility != View.GONE) {
                     child.visibility = View.GONE
-                    val lp = child.layoutParams
-                    if (lp != null) {
-                        lp.height = 0
-                        child.layoutParams = lp
-                    }
+                    child.layoutParams?.height = 0
                 }
             }
         }
@@ -419,24 +392,17 @@ class BeautifulLyrics(private val app: Application) {
 
         val cardContainer = FrameLayout(activity).apply {
             tag = "BEAUTIFUL_LYRICS_MINI_CARD"
-            layoutParams = LinearLayout.LayoutParams(-1, cardHeight).apply {
-                // Reduced left/right margins to make the card visibly wider
-                // and match the "About the artist" card constraints
-                setMargins(20, 30, 20, 30)
-            }
+            layoutParams = LinearLayout.LayoutParams(-1, cardHeight).apply { setMargins(20, 30, 20, 30) }
             clipToOutline = true
             outlineProvider = object : ViewOutlineProvider() {
-                override fun getOutline(view: View, outline: Outline) {
-                    outline.setRoundRect(0, 0, view.width, view.height, 45f)
-                }
+                override fun getOutline(view: View, outline: Outline) { outline.setRoundRect(0, 0, view.width, view.height, 45f) }
             }
         }
 
-        activeBackgroundView = AnimatedBackgroundView(activity).apply {
+        activeBackgroundView = FluidMeshBackgroundView(activity).apply {
             layoutParams = FrameLayout.LayoutParams(-1, -1)
-            topColor = albumColorTop
-            bottomColor = albumColorBottom
             visibility = if (prefEnableBackground) View.VISIBLE else View.INVISIBLE
+            setColors(colorTopLeft, colorTopRight, colorBottomLeft, colorBottomRight)
         }
         cardContainer.addView(activeBackgroundView)
 
@@ -445,18 +411,11 @@ class BeautifulLyrics(private val app: Application) {
             setTextColor(Color.WHITE)
             textSize = 16f
             typeface = Typeface.create("sans-serif-black", Typeface.BOLD)
-            layoutParams = FrameLayout.LayoutParams(-2, -2).apply {
-                gravity = Gravity.TOP or Gravity.START
-                setMargins(40, 45, 0, 0)
-            }
+            layoutParams = FrameLayout.LayoutParams(-2, -2).apply { gravity = Gravity.TOP or Gravity.START; setMargins(40, 45, 0, 0) }
         }
         cardContainer.addView(titleText)
 
-        val scrollWrapper = FrameLayout(activity).apply {
-            layoutParams = FrameLayout.LayoutParams(-1, -1).apply {
-                setMargins(0, 150, 0, 180)
-            }
-        }
+        val scrollWrapper = FrameLayout(activity).apply { layoutParams = FrameLayout.LayoutParams(-1, -1).apply { setMargins(0, 150, 0, 180) } }
 
         activeScrollView = ScrollView(activity).apply {
             layoutParams = FrameLayout.LayoutParams(-1, -1)
@@ -464,17 +423,11 @@ class BeautifulLyrics(private val app: Application) {
             clipToPadding = false
             clipChildren = false
             overScrollMode = View.OVER_SCROLL_NEVER
-
-            // Reduced the top padding (cardHeight / 4) so the first lines can sit higher
-            // Kept the bottom padding large so the final lines can still scroll up
             setPadding(0, cardHeight / 4, 0, cardHeight)
-
             setOnTouchListener { v, event ->
                 when (event.action) {
                     MotionEvent.ACTION_DOWN -> v.parent.requestDisallowInterceptTouchEvent(true)
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> v.parent.requestDisallowInterceptTouchEvent(
-                        false
-                    )
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> v.parent.requestDisallowInterceptTouchEvent(false)
                 }
                 false
             }
@@ -498,22 +451,14 @@ class BeautifulLyrics(private val app: Application) {
             textSize = 14f
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
             setPadding(45, 20, 45, 20)
-            background = GradientDrawable().apply {
-                cornerRadius = 100f
-                setColor(Color.WHITE)
-            }
-            layoutParams = FrameLayout.LayoutParams(-2, -2).apply {
-                gravity = Gravity.BOTTOM or Gravity.START
-                setMargins(40, 0, 0, 45)
-            }
+            background = GradientDrawable().apply { cornerRadius = 100f; setColor(Color.WHITE) }
+            layoutParams = FrameLayout.LayoutParams(-2, -2).apply { gravity = Gravity.BOTTOM or Gravity.START; setMargins(40, 0, 0, 45) }
             setOnClickListener {
                 try {
                     val intent = Intent()
                     intent.setClassName(activity, LYRICS_ACTIVITY)
                     activity.startActivity(intent)
-                } catch (e: Exception) {
-                    Log.e("V_SONAR", "Failed to launch lyrics: ${e.message}")
-                }
+                } catch (e: Exception) {}
             }
         }
         cardContainer.addView(showLyricsBtn)
@@ -528,8 +473,6 @@ class BeautifulLyrics(private val app: Application) {
 
     private fun ensureFullscreenInjected() {
         val activity = currentActivity ?: return
-
-        // Attach directly to the Window DecorView to completely bypass Spotify's Compose layers!
         val root = activity.window.decorView as ViewGroup
 
         var customView = root.findViewWithTag<FrameLayout>("BEAUTIFUL_LYRICS_FULLSCREEN")
@@ -538,13 +481,9 @@ class BeautifulLyrics(private val app: Application) {
             customView = root.findViewWithTag<FrameLayout>("BEAUTIFUL_LYRICS_FULLSCREEN")
         }
 
-        // Force our overlay to the absolute front of the window
         customView?.let {
-            if (root.getChildAt(root.childCount - 1) != it) {
-                it.bringToFront()
-            }
-            it.translationZ = 10000f
-            it.elevation = 10000f
+            if (root.getChildAt(root.childCount - 1) != it) it.bringToFront()
+            it.translationZ = 10000f; it.elevation = 10000f
         }
     }
 
@@ -552,26 +491,21 @@ class BeautifulLyrics(private val app: Application) {
         val container = FrameLayout(activity).apply {
             tag = "BEAUTIFUL_LYRICS_FULLSCREEN"
             layoutParams = FrameLayout.LayoutParams(-1, -1)
-            elevation = 10000f
-            translationZ = 10000f
-            isClickable = true
-            isFocusable = true
-            setBackgroundColor(Color.parseColor("#0A0A0A")) // Solid base to hide anything behind it
+            elevation = 10000f; translationZ = 10000f
+            isClickable = true; isFocusable = true
+            setBackgroundColor(Color.parseColor("#050505"))
         }
 
-        activeBackgroundView = AnimatedBackgroundView(activity).apply {
+        activeBackgroundView = FluidMeshBackgroundView(activity).apply {
             layoutParams = FrameLayout.LayoutParams(-1, -1)
-            topColor = albumColorTop
-            bottomColor = albumColorBottom
             visibility = if (prefEnableBackground) View.VISIBLE else View.INVISIBLE
+            setColors(colorTopLeft, colorTopRight, colorBottomLeft, colorBottomRight)
         }
         container.addView(activeBackgroundView)
 
         activeScrollView = ScrollView(activity).apply {
             layoutParams = FrameLayout.LayoutParams(-1, -1)
-            isFillViewport = true
-            clipToPadding = false
-            clipChildren = false
+            isFillViewport = true; clipToPadding = false; clipChildren = false
             overScrollMode = View.OVER_SCROLL_NEVER
             setPadding(0, 0, 0, activity.resources.displayMetrics.heightPixels / 2)
         }
@@ -579,8 +513,7 @@ class BeautifulLyrics(private val app: Application) {
         activeLyricsContainer = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.START
-            clipChildren = false
-            clipToPadding = false
+            clipChildren = false; clipToPadding = false
             setPadding(80, activity.resources.displayMetrics.heightPixels / 3, 80, 0)
         }
 
@@ -589,28 +522,25 @@ class BeautifulLyrics(private val app: Application) {
 
         val topFade = View(activity).apply {
             layoutParams = FrameLayout.LayoutParams(-1, 550).apply { gravity = Gravity.TOP }
-            background = GradientDrawable(
-                GradientDrawable.Orientation.TOP_BOTTOM,
-                intArrayOf(Color.parseColor("#FF000000"), Color.TRANSPARENT)
-            )
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(Color.parseColor("#CC000000"), Color.TRANSPARENT))
         }
         container.addView(topFade)
 
         val bottomFade = View(activity).apply {
             layoutParams = FrameLayout.LayoutParams(-1, 500).apply { gravity = Gravity.BOTTOM }
-            background = GradientDrawable(
-                GradientDrawable.Orientation.BOTTOM_TOP,
-                intArrayOf(Color.parseColor("#FF000000"), Color.TRANSPARENT)
-            )
+            background = GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, intArrayOf(Color.parseColor("#CC000000"), Color.TRANSPARENT))
         }
         container.addView(bottomFade)
 
         val backBtn = FrameLayout(activity).apply {
-            layoutParams = FrameLayout.LayoutParams(110, 110).apply {
-                gravity = Gravity.TOP or Gravity.START
-                setMargins(60, 140, 0, 0)
+            tag = "BACK_BTN"
+            layoutParams = FrameLayout.LayoutParams(110, 110).apply { gravity = Gravity.TOP or Gravity.START; setMargins(60, 140, 0, 0) }
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                // 🎯 DARKER & RICHER GLASS (65% Opacity)
+                setColor(Color.parseColor("#A6000000"))
+                setStroke(3, dynamicOutlineColor)
             }
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.parseColor("#66000000")) }
             addView(object : View(activity) {
                 val p = Paint().apply { color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 6f; strokeCap = Paint.Cap.ROUND; isAntiAlias = true }
                 override fun onDraw(canvas: Canvas) {
@@ -619,20 +549,23 @@ class BeautifulLyrics(private val app: Application) {
                     canvas.drawLine(cx, cy + s/2, cx + s, cy - s/2, p)
                 }
             })
-            setOnClickListener {
-                userInitiatedClose = true
-                activity.finish()
-            }
+            setOnClickListener { userInitiatedClose = true; activity.finish() }
         }
         container.addView(backBtn)
 
         val island = LinearLayout(activity).apply {
+            tag = "ISLAND_TAB"
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             layoutParams = FrameLayout.LayoutParams(-2, -2).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; topMargin = 125 }
             setPadding(35, 30, 60, 30)
             visibility = if (prefEnableIsland) View.VISIBLE else View.GONE
-            background = GradientDrawable().apply { cornerRadius = 100f; setColor(Color.parseColor("#66000000")) }
+            background = GradientDrawable().apply {
+                cornerRadius = 100f
+                // 🎯 DARKER & RICHER GLASS (65% Opacity)
+                setColor(Color.parseColor("#A6000000"))
+                setStroke(3, dynamicOutlineColor)
+            }
         }
 
         islandArtView = ImageView(activity).apply {
@@ -643,21 +576,14 @@ class BeautifulLyrics(private val app: Application) {
         }
         island.addView(islandArtView)
 
-        val textGroup = LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-        }
+        val textGroup = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
         islandTitleView = TextView(activity).apply { setTextColor(Color.WHITE); textSize = 15f; typeface = Typeface.create("sans-serif-medium", Typeface.BOLD); maxLines = 1; ellipsize = TextUtils.TruncateAt.END }
         textGroup.addView(islandTitleView)
-        islandSubtitleView = TextView(activity).apply { setTextColor(Color.parseColor("#B3B3B3")); textSize = 12f; typeface = Typeface.create("sans-serif", Typeface.NORMAL); maxLines = 1; ellipsize = TextUtils.TruncateAt.END }
+        islandSubtitleView = TextView(activity).apply { setTextColor(Color.parseColor("#CCCCCC")); textSize = 12f; typeface = Typeface.create("sans-serif", Typeface.NORMAL); maxLines = 1; ellipsize = TextUtils.TruncateAt.END }
         textGroup.addView(islandSubtitleView)
         island.addView(textGroup)
 
-        val controlsGroup = LinearLayout(activity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginStart = 20 }
-        }
+        val controlsGroup = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; layoutParams = LinearLayout.LayoutParams(-2, -2).apply { marginStart = 20 } }
 
         val prevBtn = object : View(activity) {
             val p = Paint().apply { color = Color.WHITE; style = Paint.Style.FILL; isAntiAlias = true; pathEffect = CornerPathEffect(2f) }
@@ -705,11 +631,9 @@ class BeautifulLyrics(private val app: Application) {
         controlsGroup.addView(activeIslandPlayPauseView)
         controlsGroup.addView(nextBtn)
         island.addView(controlsGroup)
-
-        // Add this line right here! I forgot to attach the island to the screen.
         container.addView(island)
 
-        root.addView(container) // ADD DIRECTLY TO DECOR VIEW
+        root.addView(container)
         activeContainer = container
 
         updateIslandUI()
@@ -721,7 +645,6 @@ class BeautifulLyrics(private val app: Application) {
         }
     }
 
-
     private fun updateIslandUI() {
         if (isNpvMode) return
 
@@ -729,13 +652,11 @@ class BeautifulLyrics(private val app: Application) {
         val subtitleView = islandSubtitleView ?: return
         val artView = islandArtView ?: return
 
-        // If it's already the correct track, just return to prevent double-animation on resume
         if (titleView.text == currentTrack) {
             if (currentAlbumArt != null) artView.setImageBitmap(currentAlbumArt)
             return
         }
 
-        // If it's the very first load, just set it normally
         if (titleView.text.isEmpty()) {
             titleView.text = currentTrack
             subtitleView.text = "$currentArtist • $currentAlbum"
@@ -743,41 +664,30 @@ class BeautifulLyrics(private val app: Application) {
             return
         }
 
-        // --- THE SLICK ANIMATION ---
         val outDuration = 200L
-        val inDuration = 350L
+        val inDuration = 450L
 
-        // 1. Fade out and slide up slightly
-        val animateOut = { v: View ->
-            v.animate().alpha(0f).translationY(-25f).setDuration(outDuration).start()
-        }
+        val animateOut = { v: View -> v.animate().alpha(0f).translationY(-25f).setDuration(outDuration).start() }
+        animateOut(titleView); animateOut(subtitleView); animateOut(artView)
 
-        animateOut(titleView)
-        animateOut(subtitleView)
-        animateOut(artView)
-
-        // 2. Wait for fade out, swap data, start them low, and slide up to center
         mainHandler.postDelayed({
             titleView.text = currentTrack
             subtitleView.text = "$currentArtist • $currentAlbum"
             if (currentAlbumArt != null) artView.setImageBitmap(currentAlbumArt)
 
             val animateIn = { v: View ->
-                v.translationY = 25f // Start slightly lower
-                v.animate().alpha(1f).translationY(0f).setDuration(inDuration).setInterpolator(DecelerateInterpolator(1.5f)).start()
+                v.translationY = 35f
+                v.animate().alpha(1f).translationY(0f).setDuration(inDuration).setInterpolator(fluidSpring).start()
             }
-
-            animateIn(titleView)
-            animateIn(subtitleView)
-            animateIn(artView)
+            animateIn(titleView); animateIn(subtitleView); animateIn(artView)
         }, outDuration)
     }
 
     private fun updateUIState(message: String) {
         val container = activeLyricsContainer ?: return
-
         activeScrollView?.post { activeScrollView?.scrollTo(0, 0) }
 
+        currentLyrics?.forEach { it.detachView() }
         container.removeAllViews()
         container.alpha = 1f
         container.translationY = 0f
@@ -788,9 +698,7 @@ class BeautifulLyrics(private val app: Application) {
             setTextColor(Color.parseColor("#B3B3B3"))
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
             gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
-                topMargin = if (isNpvMode) 100 else 300
-            }
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = if (isNpvMode) 100 else 300 }
         }
         container.addView(tv)
     }
@@ -798,8 +706,9 @@ class BeautifulLyrics(private val app: Application) {
     private fun buildLyricsUI() {
         val container = activeLyricsContainer ?: return
         val lyrics = currentLyrics ?: return
-        container.removeAllViews()
 
+        currentLyrics?.forEach { it.detachView() }
+        container.removeAllViews()
         container.alpha = 1f
         container.translationY = 0f
 
@@ -809,7 +718,8 @@ class BeautifulLyrics(private val app: Application) {
         }
 
         for ((index, line) in lyrics.withIndex()) {
-            val cleanText = line.text.trim()
+            val cleanText = line.text.trim().replace(Regex("^[,\\-\\s]+|[,\\-\\s]+$"), "")
+
             val isAdlib = cleanText.startsWith("(") && cleanText.endsWith(")")
             val baseSize = if (isNpvMode) prefTextSize * 0.80f else prefTextSize
 
@@ -825,16 +735,23 @@ class BeautifulLyrics(private val app: Application) {
             }
 
             val tv = SweepTextView(container.context, isAdlib, isRhyme).apply {
-                text = line.text
+                text = cleanText
                 textSize = if (isAdlib) baseSize * 0.75f else baseSize
                 gravity = if (isAdlib) Gravity.END else Gravity.START
                 typeface = Typeface.create("sans-serif-black", Typeface.BOLD)
-                alpha = 0.4f
+                alpha = 0.35f
                 scaleX = 0.95f
                 scaleY = 0.95f
+                translationY = 15f
                 pivotX = if (isAdlib) resources.displayMetrics.widthPixels.toFloat() else 0f
                 setLineSpacing(0f, 1.2f)
-                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = calculatedBottomMargin }
+
+                setPadding(0, 20, 0, 60)
+                setShadowLayer(25f, 0f, 15f, Color.parseColor("#66000000"))
+
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
+                    bottomMargin = calculatedBottomMargin - 50
+                }
                 setProgress(0f)
             }
             line.view = tv
@@ -842,7 +759,6 @@ class BeautifulLyrics(private val app: Application) {
         }
 
         activeScrollView?.post { activeScrollView?.scrollTo(0, 0) }
-
         activeLineIndex = -1
         syncLyricsToPlayback()
     }
@@ -862,25 +778,22 @@ class BeautifulLyrics(private val app: Application) {
         if (newActiveIndex != -1) {
             val activeView = lyrics[newActiveIndex].view as? SweepTextView
             val currentLineTime = lyrics[newActiveIndex].timeMs
+
             val nextLineTime = if (newActiveIndex + 1 < lyrics.size) lyrics[newActiveIndex + 1].timeMs else currentLineTime + 5000L
+            val gapToNextLine = nextLineTime - currentLineTime
 
-            val timeToNextLine = nextLineTime - currentLineTime
-            val estimatedVocalDuration = 1200L + (lyrics[newActiveIndex].text.length * 70L)
-            val duration = Math.min(estimatedVocalDuration, timeToNextLine).coerceAtLeast(500L)
+            val maxVocalDuration = (lyrics[newActiveIndex].text.length * 100L) + 1200L
+            val sweepDuration = Math.min(gapToNextLine - 150L, maxVocalDuration).coerceAtLeast(300L)
 
-            val linearProgress = ((estimatedTime - currentLineTime).toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+            val timeElapsed = estimatedTime - currentLineTime
+            val linearProgress = (timeElapsed.toFloat() / sweepDuration.toFloat()).coerceIn(0f, 1f)
 
-            // LAST WORD SLOW DOWN FIX:
-            // Applying an ease-out power curve. This naturally pushes the first part of the sweep slightly faster,
-            // and smoothly decelerates the sweep as it reaches the last word (approaching 1.0)
-            val sweepProgress = 1f - (1f - linearProgress).pow(1.5f)
+            val sweepProgress = 1f - (1f - linearProgress).pow(2.5f)
 
             activeView?.setProgress(sweepProgress)
 
-            // RHYME EMPHASIS FIX:
-            // If the line is a rhyme, double the scale swelling effect so the line "pops" physically more!
-            val baseMaxSwell = if (activeView?.isAdlib == true) 0.02f else 0.05f
-            val finalMaxSwell = if (activeView?.isRhyme == true) baseMaxSwell * 2.2f else baseMaxSwell
+            val baseMaxSwell = if (activeView?.isAdlib == true) 0.015f else 0.025f
+            val finalMaxSwell = if (activeView?.isRhyme == true) baseMaxSwell * 1.6f else baseMaxSwell
 
             val swellScale = 1.0f + (finalMaxSwell * sweepProgress)
             activeView?.scaleX = swellScale
@@ -891,25 +804,30 @@ class BeautifulLyrics(private val app: Application) {
             activeLineIndex = newActiveIndex
             for (i in lyrics.indices) {
                 val tv = lyrics[i].view as? SweepTextView ?: continue
+
                 if (i < activeLineIndex) {
                     tv.setProgress(1f)
-                    tv.animate().scaleX(0.95f).scaleY(0.95f).alpha(0.8f).setDuration(450).setInterpolator(DecelerateInterpolator(1.5f)).start()
+                    tv.animate().scaleX(0.95f).scaleY(0.95f).alpha(0.6f).translationY(0f)
+                        .setDuration(450).setInterpolator(fluidEaseOut).start()
                 } else if (i == activeLineIndex) {
-                    tv.animate().alpha(1.0f).setDuration(300).start()
+                    tv.animate().alpha(1.0f).translationY(0f)
+                        .setDuration(400).setInterpolator(fluidEaseOut).start()
+
                     tv.post {
                         val offset = if (isNpvMode) (scroll.height / 4) else (scroll.height / 3)
                         val targetScrollY = tv.top - offset + (tv.height / 2)
 
                         scrollAnimator?.cancel()
                         scrollAnimator = ObjectAnimator.ofInt(scroll, "scrollY", targetScrollY).apply {
-                            duration = 600
-                            interpolator = DecelerateInterpolator(1.5f)
+                            duration = 750
+                            interpolator = fluidSpring
                             start()
                         }
                     }
                 } else {
                     tv.setProgress(0f)
-                    tv.animate().scaleX(0.95f).scaleY(0.95f).alpha(0.4f).setDuration(450).setInterpolator(DecelerateInterpolator(1.5f)).start()
+                    tv.animate().scaleX(0.92f).scaleY(0.92f).alpha(0.3f).translationY(15f)
+                        .setDuration(500).setInterpolator(fluidEaseOut).start()
                 }
             }
         }
@@ -917,7 +835,6 @@ class BeautifulLyrics(private val app: Application) {
 
     inner class SweepTextView(context: Context, val isAdlib: Boolean = false, val isRhyme: Boolean = false) : TextView(context) {
         private var sweepProgress = 0f
-        // Dynamically pull the generated tinted colors
         private val colorActive get() = if (isAdlib) colorActiveAdlib else colorActiveText
         private val colorInactive get() = if (isAdlib) colorInactiveAdlib else colorInactiveText
 
@@ -940,15 +857,26 @@ class BeautifulLyrics(private val app: Application) {
             }
 
             val textLayout = layout ?: run { super.onDraw(canvas); return }
-            val totalWidth = (0 until textLayout.lineCount).sumOf { textLayout.getLineWidth(it).toDouble() }.toFloat()
-            val blur = width * 0.15f
-            var widthSoFar = 0f
-
-            val originalShader = paint.shader
-            val originalColor = paint.color
 
             canvas.save()
             canvas.translate(totalPaddingLeft.toFloat(), totalPaddingTop.toFloat())
+
+            val originalColor = paint.color
+            val originalShader = paint.shader
+            val sRad = shadowRadius
+            val sDx = shadowDx
+            val sDy = shadowDy
+            val sCol = shadowColor
+
+            paint.shader = null
+            paint.color = Color.argb(1, 0, 0, 0)
+            textLayout.draw(canvas)
+
+            paint.clearShadowLayer()
+
+            val totalWidth = (0 until textLayout.lineCount).sumOf { textLayout.getLineWidth(it).toDouble() }.toFloat()
+            val blur = width * 0.3f
+            var widthSoFar = 0f
 
             for (i in 0 until textLayout.lineCount) {
                 val w = textLayout.getLineWidth(i)
@@ -970,15 +898,16 @@ class BeautifulLyrics(private val app: Application) {
                     paint.shader = null
                     paint.color = colorActive
                 } else {
-                    paint.color = colorActive
-                    val sweepCenter = lineProgress * (w + blur) - (blur / 2f)
+                    paint.color = Color.WHITE
+
+                    val sweepCenter = lineProgress * (w + blur) - (blur * 0.7f)
                     val lineLeft = textLayout.getLineLeft(i)
 
                     paint.shader = LinearGradient(
-                        lineLeft + sweepCenter - blur / 2f, 0f,
-                        lineLeft + sweepCenter + blur / 2f, 0f,
-                        intArrayOf(colorActive, colorInactive),
-                        null,
+                        lineLeft + sweepCenter - (blur * 0.8f), 0f,
+                        lineLeft + sweepCenter + (blur * 0.2f), 0f,
+                        intArrayOf(colorActive, Color.WHITE, colorInactive),
+                        floatArrayOf(0.0f, 0.90f, 1.0f),
                         Shader.TileMode.CLAMP
                     )
                 }
@@ -990,30 +919,45 @@ class BeautifulLyrics(private val app: Application) {
 
                 widthSoFar += w
             }
+
             canvas.restore()
+
             paint.shader = originalShader
             paint.color = originalColor
+            paint.setShadowLayer(sRad, sDx, sDy, sCol)
         }
     }
 
-    inner class AnimatedBackgroundView(context: Context) : View(context) {
-        var topColor: Int = Color.DKGRAY
-        var bottomColor: Int = Color.BLACK
-        private val orbPaint1 = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val orbPaint2 = Paint(Paint.ANTI_ALIAS_FLAG)
+    inner class FluidMeshBackgroundView(context: Context) : View(context) {
+        private var c1 = Color.BLACK; private var c2 = Color.BLACK
+        private var c3 = Color.BLACK; private var c4 = Color.BLACK
 
-        fun animateColorsTo(newTop: Int, newBottom: Int) {
-            val topAnim = android.animation.ValueAnimator.ofArgb(topColor, newTop)
-            topAnim.addUpdateListener { topColor = it.animatedValue as Int; invalidate() }
+        private val paint1 = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val paint2 = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val paint3 = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val paint4 = Paint(Paint.ANTI_ALIAS_FLAG)
 
-            val botAnim = android.animation.ValueAnimator.ofArgb(bottomColor, newBottom)
-            botAnim.addUpdateListener { bottomColor = it.animatedValue as Int; invalidate() }
+        private fun transparentColor(c: Int) = Color.argb(0, Color.red(c), Color.green(c), Color.blue(c))
 
-            val set = android.animation.AnimatorSet()
-            set.playTogether(topAnim, botAnim)
-            set.duration = 1000 // 1-second smooth morph
-            set.interpolator = DecelerateInterpolator(1.5f)
-            set.start()
+        // 🎯 2x MORE TRANSPARENT ORBS: Alpha dropped to 50 (~20% opacity)
+        private fun applyAlpha(c: Int, alpha: Int) = Color.argb(alpha, Color.red(c), Color.green(c), Color.blue(c))
+
+        fun setColors(topL: Int, topR: Int, botL: Int, botR: Int) {
+            c1 = topL; c2 = topR; c3 = botL; c4 = botR; invalidate()
+        }
+
+        fun animateColorsTo(topL: Int, topR: Int, botL: Int, botR: Int) {
+            val a1 = android.animation.ValueAnimator.ofArgb(c1, topL).apply { addUpdateListener { c1 = it.animatedValue as Int; invalidate() } }
+            val a2 = android.animation.ValueAnimator.ofArgb(c2, topR).apply { addUpdateListener { c2 = it.animatedValue as Int; invalidate() } }
+            val a3 = android.animation.ValueAnimator.ofArgb(c3, botL).apply { addUpdateListener { c3 = it.animatedValue as Int; invalidate() } }
+            val a4 = android.animation.ValueAnimator.ofArgb(c4, botR).apply { addUpdateListener { c4 = it.animatedValue as Int; invalidate() } }
+
+            android.animation.AnimatorSet().apply {
+                playTogether(a1, a2, a3, a4)
+                duration = 2000
+                interpolator = fluidEaseOut
+                start()
+            }
         }
 
         override fun onDraw(canvas: Canvas) {
@@ -1021,19 +965,32 @@ class BeautifulLyrics(private val app: Application) {
             val speedFactor = prefAnimSpeed / 5.0
             val time = SystemClock.elapsedRealtime() * speedFactor
 
-            canvas.drawColor(Color.parseColor("#0A0A0A"))
+            canvas.drawColor(Color.parseColor("#050505"))
 
-            val cx1 = width * 0.5f + (width * 0.4f * Math.sin(time / 6000.0)).toFloat()
-            val cy1 = height * 0.4f + (height * 0.3f * Math.cos(time / 4500.0)).toFloat()
-            val cx2 = width * 0.5f + (width * 0.4f * Math.cos(time / 7000.0)).toFloat()
-            val cy2 = height * 0.6f + (height * 0.3f * Math.sin(time / 5500.0)).toFloat()
-            val radius = (Math.max(width, height) * 1.5f)
+            val w = width.toFloat(); val h = height.toFloat()
+            val rad = Math.max(w, h) * 1.5f
 
-            orbPaint1.shader = RadialGradient(cx1, cy1, radius, topColor, Color.TRANSPARENT, Shader.TileMode.CLAMP)
-            orbPaint2.shader = RadialGradient(cx2, cy2, radius * 1.2f, bottomColor, Color.TRANSPARENT, Shader.TileMode.CLAMP)
+            val x1 = w * 0.3f + (w * 0.5f * Math.sin(time / 6100.0)).toFloat()
+            val y1 = h * 0.2f + (h * 0.4f * Math.cos(time / 4700.0)).toFloat()
 
-            canvas.drawCircle(cx1, cy1, radius, orbPaint1)
-            canvas.drawCircle(cx2, cy2, radius * 1.2f, orbPaint2)
+            val x2 = w * 0.7f + (w * 0.4f * Math.cos(time / 7300.0)).toFloat()
+            val y2 = h * 0.3f + (h * 0.5f * Math.sin(time / 5900.0)).toFloat()
+
+            val x3 = w * 0.4f + (w * 0.5f * Math.sin(time / 5300.0 + Math.PI)).toFloat()
+            val y3 = h * 0.8f + (h * 0.4f * Math.cos(time / 6700.0)).toFloat()
+
+            val x4 = w * 0.8f + (w * 0.4f * Math.cos(time / 8300.0 + Math.PI)).toFloat()
+            val y4 = h * 0.7f + (h * 0.5f * Math.sin(time / 4100.0)).toFloat()
+
+            paint1.shader = RadialGradient(x1, y1, rad, applyAlpha(c1, 50), transparentColor(c1), Shader.TileMode.CLAMP)
+            paint2.shader = RadialGradient(x2, y2, rad, applyAlpha(c2, 50), transparentColor(c2), Shader.TileMode.CLAMP)
+            paint3.shader = RadialGradient(x3, y3, rad, applyAlpha(c3, 50), transparentColor(c3), Shader.TileMode.CLAMP)
+            paint4.shader = RadialGradient(x4, y4, rad, applyAlpha(c4, 50), transparentColor(c4), Shader.TileMode.CLAMP)
+
+            canvas.drawCircle(x1, y1, rad, paint1)
+            canvas.drawCircle(x2, y2, rad, paint2)
+            canvas.drawCircle(x3, y3, rad, paint3)
+            canvas.drawCircle(x4, y4, rad, paint4)
         }
     }
 }

@@ -1,27 +1,25 @@
 package io.github.chsbuffer.revancedxposed.spotify.misc.navbar
 
+import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.Application
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Color
-import android.graphics.Outline
-import android.graphics.Rect
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
+import android.graphics.*
+import android.graphics.drawable.Drawable
 import android.media.MediaMetadata
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
+import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -34,21 +32,41 @@ import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import io.github.chsbuffer.revancedxposed.MainActivity
 import java.net.URL
+import java.util.WeakHashMap
 import kotlin.concurrent.thread
 
 object FrostedNavigation {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var currentActivity: Activity? = null
-    private var currentNavColor: Int = Color.parseColor("#D9121212")
+
+    var c1 = Color.parseColor("#1A1A1A")
+    var c2 = Color.parseColor("#2A2A2A")
+    var c3 = Color.parseColor("#0A0A0A")
+    var c4 = Color.parseColor("#111111")
+    var dynamicOutlineColor = Color.parseColor("#22FFFFFF") // Subtle default
+
+    private var colorAnimator: ValueAnimator? = null
+    private val managedBackgrounds = WeakHashMap<View, FluidMeshDrawable>()
 
     private var cachedPlaylistBitmap: Bitmap? = null
     private var lastLoadedImageUrl: String = ""
 
-    private val frostingRunnable = object : Runnable {
+    enum class BarType { NPV, NAVBAR, TAB }
+
+    private val structureRunnable = object : Runnable {
         override fun run() {
             currentActivity?.let { applyFrosting(it) }
-            mainHandler.postDelayed(this, 500)
+            mainHandler.postDelayed(this, 1000)
+        }
+    }
+
+    private val renderRunnable = object : Runnable {
+        override fun run() {
+            if (currentActivity != null) {
+                managedBackgrounds.keys.forEach { it.invalidate() }
+            }
+            mainHandler.postDelayed(this, 16)
         }
     }
 
@@ -60,8 +78,18 @@ object FrostedNavigation {
         hookMediaSession(classLoader)
 
         app.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
-            override fun onActivityResumed(activity: Activity) { currentActivity = activity; mainHandler.post(frostingRunnable) }
-            override fun onActivityPaused(activity: Activity) { if (currentActivity == activity) { mainHandler.removeCallbacks(frostingRunnable); currentActivity = null } }
+            override fun onActivityResumed(activity: Activity) {
+                currentActivity = activity
+                mainHandler.post(structureRunnable)
+                mainHandler.post(renderRunnable)
+            }
+            override fun onActivityPaused(activity: Activity) {
+                if (currentActivity == activity) {
+                    mainHandler.removeCallbacks(structureRunnable)
+                    mainHandler.removeCallbacks(renderRunnable)
+                    currentActivity = null
+                }
+            }
             override fun onActivityCreated(a: Activity, b: Bundle?) {}
             override fun onActivityStarted(a: Activity) {}
             override fun onActivityStopped(a: Activity) {}
@@ -85,20 +113,67 @@ object FrostedNavigation {
 
     private fun extractGlassColor(bitmap: Bitmap) {
         try {
-            val thumb = Bitmap.createScaledBitmap(bitmap, 1, 1, true)
-            val avgColor = thumb.getPixel(0, 0)
+            val thumb = Bitmap.createScaledBitmap(bitmap, 3, 3, true)
+            val pixels = IntArray(9)
+            thumb.getPixels(pixels, 0, 3, 0, 0, 3, 3)
+
+            var rSum = 0; var gSum = 0; var bSum = 0
+            for (p in pixels) { rSum += Color.red(p); gSum += Color.green(p); bSum += Color.blue(p) }
+            val avgColor = Color.rgb(rSum / 9, gSum / 9, bSum / 9)
+
+            var maxDist = -1
+            var accentColor = avgColor
+            for (p in pixels) {
+                val dist = Math.abs(Color.red(p) - Color.red(avgColor)) + Math.abs(Color.green(p) - Color.green(avgColor)) + Math.abs(Color.blue(p) - Color.blue(avgColor))
+                if (dist > maxDist) { maxDist = dist; accentColor = p }
+            }
             thumb.recycle()
+
+            val lum = 0.299 * Color.red(avgColor) + 0.587 * Color.green(avgColor) + 0.114 * Color.blue(avgColor)
+            val outHsv = FloatArray(3)
+            Color.colorToHSV(accentColor, outHsv)
+
+            // 🎯 SUBTLE OUTLINE: Desaturated, low opacity (40% max)
+            val newOutlineColor = if (lum > 127) {
+                outHsv[1] = (outHsv[1] * 0.8f).coerceAtMost(1f) // Less saturated
+                outHsv[2] = 0.2f // Much darker
+                Color.HSVToColor(90, outHsv) // ~35% opacity
+            } else {
+                outHsv[1] = (outHsv[1] * 0.4f).coerceAtMost(1f) // Near white/pastel
+                outHsv[2] = 0.95f // Bright
+                Color.HSVToColor(100, outHsv) // ~40% opacity
+            }
 
             val hsv = FloatArray(3)
             Color.colorToHSV(avgColor, hsv)
-            hsv[1] = (hsv[1] * 1.5f).coerceIn(0f, 1f)
-            hsv[2] = hsv[2].coerceAtMost(0.25f)
+            val baseHue = hsv[0]
+            val baseSat = hsv[1].coerceIn(0.5f, 1f)
 
-            val baseColor = Color.HSVToColor(hsv)
-            currentNavColor = Color.argb(216, Color.red(baseColor), Color.green(baseColor), Color.blue(baseColor))
+            hsv[0] = baseHue; hsv[1] = baseSat; hsv[2] = 0.90f; val nc1 = Color.HSVToColor(hsv)
+            hsv[0] = (baseHue + 40f) % 360f; hsv[1] = baseSat * 0.9f; hsv[2] = 0.80f; val nc2 = Color.HSVToColor(hsv)
+            hsv[0] = (baseHue - 30f + 360f) % 360f; hsv[1] = baseSat; hsv[2] = 0.70f; val nc3 = Color.HSVToColor(hsv)
+            hsv[0] = (baseHue + 15f) % 360f; hsv[1] = baseSat * 1.0f; hsv[2] = 0.60f; val nc4 = Color.HSVToColor(hsv)
 
-            currentActivity?.let { applyFrosting(it) }
+            mainHandler.post {
+                animateColorChange(nc1, nc2, nc3, nc4, newOutlineColor)
+            }
         } catch (e: Exception) {}
+    }
+
+    private fun animateColorChange(t1: Int, t2: Int, t3: Int, t4: Int, tOut: Int) {
+        colorAnimator?.cancel()
+        val a1 = android.animation.ValueAnimator.ofArgb(c1, t1).apply { addUpdateListener { c1 = it.animatedValue as Int } }
+        val a2 = android.animation.ValueAnimator.ofArgb(c2, t2).apply { addUpdateListener { c2 = it.animatedValue as Int } }
+        val a3 = android.animation.ValueAnimator.ofArgb(c3, t3).apply { addUpdateListener { c3 = it.animatedValue as Int } }
+        val a4 = android.animation.ValueAnimator.ofArgb(c4, t4).apply { addUpdateListener { c4 = it.animatedValue as Int } }
+        val aOut = android.animation.ValueAnimator.ofArgb(dynamicOutlineColor, tOut).apply { addUpdateListener { dynamicOutlineColor = it.animatedValue as Int } }
+
+        android.animation.AnimatorSet().apply {
+            playTogether(a1, a2, a3, a4, aOut)
+            duration = 1500
+            interpolator = DecelerateInterpolator(1.5f)
+            start()
+        }
     }
 
     private fun applyFrosting(activity: Activity) {
@@ -133,37 +208,43 @@ object FrostedNavigation {
 
         if (name.contains("BottomNavigationView") || resName == "navigation_bar" || resName == "now_playing_bar_layout") {
 
-            view.background = GradientDrawable().apply {
-                setColor(currentNavColor)
-                if (resName == "now_playing_bar_layout") {
-                    // Fully rounded on all sides to look like an island
-                    cornerRadii = floatArrayOf(45f, 45f, 45f, 45f, 45f, 45f, 45f, 45f)
+            val screenW = activity.resources.displayMetrics.widthPixels
+
+            var drawable = managedBackgrounds[view]
+            if (drawable == null || view.background !== drawable) {
+                val type = if (resName == "now_playing_bar_layout") BarType.NPV else BarType.NAVBAR
+                val radii = if (type == BarType.NPV) {
+                    floatArrayOf(45f, 45f, 45f, 45f, 45f, 45f, 45f, 45f)
                 } else {
-                    // Standard navigation bar styling (bottom flat)
-                    cornerRadii = floatArrayOf(45f, 45f, 45f, 45f, 0f, 0f, 0f, 0f)
+                    floatArrayOf(45f, 45f, 0f, 0f, 0f, 0f, 0f, 0f)
                 }
+                drawable = FluidMeshDrawable(radii, type, screenW)
+                view.background = drawable
+                managedBackgrounds[view] = drawable
             }
 
-            // Only pad the navigation bar, do not stretch the island now playing bar
             if (view.paddingTop < 10 && resName != "now_playing_bar_layout") {
                 view.setPadding(view.paddingLeft, view.paddingTop + 15, view.paddingRight, view.paddingBottom)
             }
 
             if (resName == "navigation_bar") {
-                // Since our custom tab is ALWAYS visible now (either pinned or empty), always clip bounds
                 if (view.isShown) {
-                    val screenWidth = activity.resources.displayMetrics.widthPixels
-                    val cutoff = (screenWidth * 0.75f).toInt()
-                    view.clipBounds = Rect(0, 0, cutoff, view.height + 1000)
-                } else {
+                    val cutoff = (screenW * 0.75f).toInt()
+                    val currentClip = view.clipBounds
+                    if (currentClip == null || currentClip.right != cutoff) {
+                        view.clipBounds = Rect(0, 0, cutoff, view.height + 1000)
+                    }
+                } else if (view.clipBounds != null) {
                     view.clipBounds = null
                 }
             }
         }
 
         if (view is RecyclerView || name.contains("ScrollView")) {
-            (view as? ViewGroup)?.clipToPadding = false
-            (view as? ViewGroup)?.clipChildren = false
+            val vg = view as? ViewGroup
+            if (vg != null && (vg.clipToPadding || vg.clipChildren)) {
+                vg.clipToPadding = false; vg.clipChildren = false
+            }
         }
 
         if (view is ViewGroup) {
@@ -216,7 +297,7 @@ object FrostedNavigation {
 
                 val text = TextView(activity).apply {
                     tag = "PINNED_TEXT"
-                    setTextColor(Color.parseColor("#A7A7A7"))
+                    setTextColor(Color.parseColor("#E5E5E5"))
                     textSize = 10.5f
                     typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                     gravity = Gravity.CENTER_HORIZONTAL
@@ -224,16 +305,12 @@ object FrostedNavigation {
                     isSingleLine = true
                     ellipsize = TextUtils.TruncateAt.END
                     setPadding(textPaddingHorizontal, 0, textPaddingHorizontal, 0)
-                    layoutParams = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT
-                    )
+                    layoutParams = LinearLayout.LayoutParams(-1, -2)
                 }
 
                 addView(icon)
                 addView(text)
 
-                // Handlers for the 3-second hold to clear logic
                 var holdRunnable: Runnable? = null
                 var isClearedByHold = false
 
@@ -253,17 +330,17 @@ object FrostedNavigation {
 
                                 Toast.makeText(activity, "🗑️ Pinned playlist cleared!\nCopy a new link to pin.", Toast.LENGTH_LONG).show()
                             }
-                            mainHandler.postDelayed(holdRunnable!!, 3000) // Trigger after EXACTLY 3 seconds
+                            mainHandler.postDelayed(holdRunnable!!, 3000)
                         }
                         MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                             holdRunnable?.let { mainHandler.removeCallbacks(it) }
                         }
                     }
-                    false // Return false so onClick still receives the tap event
+                    false
                 }
 
                 setOnClickListener {
-                    if (isClearedByHold) return@setOnClickListener // Block click if we just cleared it
+                    if (isClearedByHold) return@setOnClickListener
 
                     val currentUri = prefs.getString("pinned_uri", "") ?: ""
                     if (currentUri.isEmpty()) {
@@ -278,7 +355,6 @@ object FrostedNavigation {
             root.addView(tab)
         }
 
-        // --- Handle Image State ---
         if (imageUrl.isNotEmpty() && imageUrl != lastLoadedImageUrl) {
             lastLoadedImageUrl = imageUrl
             thread {
@@ -298,19 +374,120 @@ object FrostedNavigation {
 
         val insets = root.rootWindowInsets
         val bottomInset = insets?.systemWindowInsetBottom ?: 0
+        val currentParams = tab.layoutParams as? FrameLayout.LayoutParams
 
-        tab.layoutParams = FrameLayout.LayoutParams(tabWidth, navHeight).apply {
-            gravity = Gravity.BOTTOM or Gravity.END
-            bottomMargin = bottomInset
+        if (currentParams == null || currentParams.width != tabWidth || currentParams.height != navHeight || currentParams.bottomMargin != bottomInset) {
+            tab.layoutParams = FrameLayout.LayoutParams(tabWidth, navHeight).apply {
+                gravity = Gravity.BOTTOM or Gravity.END
+                bottomMargin = bottomInset
+            }
         }
 
-        tab.background = GradientDrawable().apply {
-            setColor(currentNavColor)
-            cornerRadii = floatArrayOf(0f, 0f, 45f, 45f, 0f, 0f, 0f, 0f)
+        var drawable = managedBackgrounds[tab]
+        if (drawable == null || tab.background !== drawable) {
+            drawable = FluidMeshDrawable(floatArrayOf(0f, 0f, 45f, 45f, 0f, 0f, 0f, 0f), BarType.TAB, screenWidth)
+            tab.background = drawable
+            managedBackgrounds[tab] = drawable
         }
 
-        // Apply dynamic exact title
         val titleToDisplay = if (pinnedUri.isEmpty()) "Pin Playlist" else pinnedTitle
         tab.findViewWithTag<TextView>("PINNED_TEXT")?.text = titleToDisplay
+    }
+
+    class FluidMeshDrawable(private val radii: FloatArray, private val type: BarType, private val screenW: Int) : Drawable() {
+        private val paint1 = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val paint2 = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val paint3 = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val paint4 = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        private val overlayPaint = Paint().apply { color = Color.parseColor("#A6000000") } // 65% Black
+
+        // 🎯 SUBTLE OUTLINE
+        private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 2f // Thinner, more elegant line
+        }
+
+        private val clipPath = Path()
+        private var lastW = 0f
+        private var lastH = 0f
+
+        private fun transparentColor(c: Int) = Color.argb(0, Color.red(c), Color.green(c), Color.blue(c))
+        private fun applyAlpha(c: Int, alpha: Int) = Color.argb(alpha, Color.red(c), Color.green(c), Color.blue(c))
+
+        override fun draw(canvas: Canvas) {
+            val w = bounds.width().toFloat()
+            val h = bounds.height().toFloat()
+            if (w <= 0f || h <= 0f) return
+
+            if (w != lastW || h != lastH) {
+                clipPath.reset()
+                clipPath.addRoundRect(bounds.left.toFloat(), bounds.top.toFloat(), bounds.right.toFloat(), bounds.bottom.toFloat(), radii, Path.Direction.CW)
+                lastW = w; lastH = h
+            }
+
+            canvas.save()
+            canvas.clipPath(clipPath)
+
+            val time = SystemClock.elapsedRealtime()
+            val sW = screenW.toFloat()
+            val rad = Math.max(sW, h) * 1.5f
+
+            val x1 = sW * 0.3f + (sW * 0.5f * Math.sin(time / 6100.0)).toFloat()
+            val y1 = h * 0.2f + (h * 0.4f * Math.cos(time / 4700.0)).toFloat()
+
+            val x2 = sW * 0.7f + (sW * 0.4f * Math.cos(time / 7300.0)).toFloat()
+            val y2 = h * 0.3f + (h * 0.5f * Math.sin(time / 5900.0)).toFloat()
+
+            val x3 = sW * 0.4f + (sW * 0.5f * Math.sin(time / 5300.0 + Math.PI)).toFloat()
+            val y3 = h * 0.8f + (h * 0.4f * Math.cos(time / 6700.0)).toFloat()
+
+            val x4 = sW * 0.8f + (sW * 0.4f * Math.cos(time / 8300.0 + Math.PI)).toFloat()
+            val y4 = h * 0.7f + (h * 0.5f * Math.sin(time / 4100.0)).toFloat()
+
+            paint1.shader = RadialGradient(x1, y1, rad, applyAlpha(FrostedNavigation.c1, 50), transparentColor(FrostedNavigation.c1), Shader.TileMode.CLAMP)
+            paint2.shader = RadialGradient(x2, y2, rad, applyAlpha(FrostedNavigation.c2, 50), transparentColor(FrostedNavigation.c2), Shader.TileMode.CLAMP)
+            paint3.shader = RadialGradient(x3, y3, rad, applyAlpha(FrostedNavigation.c3, 50), transparentColor(FrostedNavigation.c3), Shader.TileMode.CLAMP)
+            paint4.shader = RadialGradient(x4, y4, rad, applyAlpha(FrostedNavigation.c4, 50), transparentColor(FrostedNavigation.c4), Shader.TileMode.CLAMP)
+
+            canvas.save()
+            if (type == BarType.TAB) canvas.translate(-(sW * 0.75f), 0f)
+
+            canvas.drawCircle(x1, y1, rad, paint1)
+            canvas.drawCircle(x2, y2, rad, paint2)
+            canvas.drawCircle(x3, y3, rad, paint3)
+            canvas.drawCircle(x4, y4, rad, paint4)
+            canvas.restore()
+
+            canvas.drawRect(bounds, overlayPaint)
+
+            strokePaint.color = FrostedNavigation.dynamicOutlineColor
+            canvas.save()
+
+            // 🎯 BOTTOM CLIP & SEAMLESS TAB FIX
+            when (type) {
+                BarType.NAVBAR -> {
+                    // Cuts off the right edge (where the tab goes) and the bottom entirely!
+                    canvas.clipRect(-10f, -10f, w, h - 5f)
+                }
+                BarType.TAB -> {
+                    // Cuts off the left edge (to mate with the navbar) and the bottom!
+                    canvas.clipRect(1f, -10f, w + 10f, h - 5f)
+                }
+                BarType.NPV -> {
+                    // NPV floats, so it needs a full border. No clip needed!
+                }
+            }
+
+            canvas.drawPath(clipPath, strokePaint)
+            canvas.restore()
+
+            canvas.restore()
+        }
+
+        override fun setAlpha(alpha: Int) {}
+        override fun setColorFilter(colorFilter: ColorFilter?) {}
+        @Deprecated("Deprecated in Java")
+        override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
     }
 }

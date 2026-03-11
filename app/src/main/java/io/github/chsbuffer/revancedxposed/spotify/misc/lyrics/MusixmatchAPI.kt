@@ -16,6 +16,10 @@ object MusixmatchAPI {
     private var USER_TOKEN = ""
     private const val APP_ID = "web-desktop-app-v1.0"
 
+    // 🎯 ADDED: Raw LRC Memory Cache to prevent duplicate network requests
+    private var cachedTrackKey: String = ""
+    private var cachedRawLrc: String = ""
+
     fun getLyrics(context: Context, title: String, artist: String, callback: (List<LyricLine>?) -> Unit) {
         log(context, "--- REQUEST: $title - $artist ---")
 
@@ -30,6 +34,24 @@ object MusixmatchAPI {
             }
         } else {
             performSearch(context, title, artist, callback)
+        }
+    }
+
+    // 🎯 ADDED: Automatically writes .lrc to disk for the Audio Ripper
+    fun downloadLrcToFile(context: Context, title: String, artist: String, outputFile: File) {
+        val trackKey = "$title - $artist"
+
+        // If Beautiful Lyrics ALREADY fetched this, write it instantly! (Zero network delay)
+        if (cachedTrackKey == trackKey && cachedRawLrc.isNotEmpty()) {
+            try { outputFile.writeText(cachedRawLrc) } catch (e: Exception) {}
+            return
+        }
+
+        // If screen is off and UI didn't fetch it, fetch it now in the background
+        getLyrics(context, title, artist) {
+            if (cachedTrackKey == trackKey && cachedRawLrc.isNotEmpty()) {
+                try { outputFile.writeText(cachedRawLrc) } catch (e: Exception) {}
+            }
         }
     }
 
@@ -154,6 +176,10 @@ object MusixmatchAPI {
                     }
 
                     if (rawLyrics.isNotEmpty()) {
+                        // 🎯 ADDED: Save to memory cache for the Audio Ripper to use!
+                        cachedTrackKey = "$originalTitle - $originalArtist"
+                        cachedRawLrc = rawLyrics
+
                         log(context, "✅ SUCCESS! Parsed LRC data.")
                         callback(parseLrc(rawLyrics))
                     } else {
@@ -172,7 +198,6 @@ object MusixmatchAPI {
         val rawLines = mutableListOf<Pair<Long, String>>()
         val regex = Regex("\\[(\\d{2}):(\\d{2})\\.(\\d{2,3})\\](.*)")
 
-        // Pass 1: Extract all standard timestamps and string content
         for (line in lrc.split("\n")) {
             val match = regex.find(line)
             if (match != null) {
@@ -190,34 +215,28 @@ object MusixmatchAPI {
             }
         }
 
+        // Dummy generic parsing for the return statement (Assuming LyricLine takes Long, String)
         val lines = mutableListOf<LyricLine>()
-        // Regex to separate text inside parentheses from text outside parentheses
         val partRegex = Regex("\\(.*?\\)|[^()]+")
 
-        // Pass 2: Break lines into parts (Main lyrics vs (Adlibs))
         for (i in rawLines.indices) {
             val currentLine = rawLines[i]
             val nextTimeMs = if (i + 1 < rawLines.size) rawLines[i + 1].first else currentLine.first + 5000L
 
             val parts = partRegex.findAll(currentLine.second)
                 .map { it.value.trim() }
-                // This completely prevents stray commas and punctuation from becoming their own lyric line!
                 .filter { it.any { char -> char.isLetterOrDigit() } }
                 .toList()
 
-            // If there are no adlibs on this line, add normally
             if (parts.size <= 1) {
                 lines.add(LyricLine(currentLine.first, currentLine.second))
             } else {
-                // Inline adlibs found! Calculate their character proportions so
-                // we can dynamically offset their timestamps for perfect sweeping.
                 val totalLength = parts.sumOf { it.length }.toFloat()
                 var currentTime = currentLine.first
                 val availableTime = (nextTimeMs - currentLine.first).coerceAtLeast(parts.size * 250L)
 
                 for (part in parts) {
                     lines.add(LyricLine(currentTime, part))
-                    // Give each string segment a proportional chunk of the available sweeping time
                     val durationForPart = ((part.length / totalLength) * availableTime).toLong().coerceAtLeast(150L)
                     currentTime += durationForPart
                 }
