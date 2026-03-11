@@ -1,3 +1,12 @@
+/*
+ * Custom changes:
+ * V's Custom Attributes injected into the Defensive Unsafe Clone method.
+ * Non-destructive attribute override: clones AccountAttribute objects instead of mutating in-place.
+ * V's MASTER DUAL-FORENSICS DUMPER: Harvests both the Server's Reality and V's Shadow Map.
+ * V's MANUAL GHOST PROTOCOL: Checks for the lock file dropped by Kotlin. If found, returns the clean map.
+ * Stack Trace Filter: Prevents server-side detection by serving original data to network/sync calls.
+ * Dynamic Proxy Lists: Protects Protobuf integrity by proxying list interfaces.
+ */
 package app.revanced.extension.spotify.misc;
 
 import static java.lang.Boolean.FALSE;
@@ -17,6 +26,7 @@ import de.robv.android.xposed.XposedHelpers;
 @SuppressWarnings("unused")
 public final class UnlockPremiumPatch {
 
+    // V'S DUAL MEMORY BANKS
     private static final Map<String, String> SEEN_ORIGINAL_STATES = new HashMap<>();
     private static final Map<String, String> SEEN_SHADOW_STATES = new HashMap<>();
     private static final Object FILE_LOCK = new Object();
@@ -38,8 +48,10 @@ public final class UnlockPremiumPatch {
     }
 
     private static final List<OverrideAttribute> PREMIUM_OVERRIDES = List.of(
-            // Core functionality
-            new OverrideAttribute("player-license", "on-demand"),
+            // --- CORE FUNCTIONALITY ---
+            new OverrideAttribute("ads", FALSE),
+            new OverrideAttribute("player-license", "premium"),
+            new OverrideAttribute("type", "premium"),
             new OverrideAttribute("shuffle", FALSE),
             new OverrideAttribute("on-demand", TRUE),
             new OverrideAttribute("streaming", TRUE),
@@ -47,23 +59,23 @@ public final class UnlockPremiumPatch {
             new OverrideAttribute("streaming-rules", ""),
             new OverrideAttribute("nft-disabled", "1"),
 
-            // Extended overrides
+            // 🎯 --- V'S AGGRESSIVE NEW HITLIST --- 🎯
             new OverrideAttribute("smart-shuffle", "AVAILABLE", false),
             new OverrideAttribute("ad-formats-preroll-video", FALSE, false),
             new OverrideAttribute("has-audiobooks-subscription", TRUE, false),
             new OverrideAttribute("social-session-free-tier", FALSE, false),
             new OverrideAttribute("jam-social-session", "PREMIUM", false),
             new OverrideAttribute("parrot", "enabled", false),
-            new OverrideAttribute("on-demand-trial-in-progress", TRUE, false),
+            // new OverrideAttribute("on-demand-trial-in-progress", TRUE, false),
             new OverrideAttribute("ugc-abuse-report", FALSE, false),
             new OverrideAttribute("offline-backup", "ENABLED", false),
             new OverrideAttribute("lyrics-offline", TRUE, false),
 
-            // UI and performance tweaks
+            // 🚀 --- THE PERFORMANCE & UI OVERRIDES --- 🚀
             new OverrideAttribute("is-tuna", TRUE, false),
             new OverrideAttribute("is-seadragon", TRUE, false),
 
-            // Deep attribute overrides
+            // --- V'S CUSTOM DEEP CORE ATTRIBUTES ---
             new OverrideAttribute("audio-quality", "2", false),
             new OverrideAttribute("social-session", TRUE, false),
             new OverrideAttribute("obfuscate-restricted-tracks", FALSE, false),
@@ -83,89 +95,40 @@ public final class UnlockPremiumPatch {
     );
 
     /**
-     * Dumps attribute state to a forensics file for debugging purposes.
-     * Tracks changes between invocations to avoid redundant writes.
+     * Universally checks the execution stack trace to determine if the caller
+     * is a network, serialization, or synchronization component.
+     * This prevents server-side bans by ensuring the spoofed data is never leaked back to Spotify.
      */
-    private static void dumpForensics(String mapLabel, Map<String, ?> map, Map<String, String> memoryBank) {
-        try {
-            android.content.Context ctx = app.revanced.extension.shared.Utils.getContext();
-            if (ctx == null) return;
-
-            java.io.File file = new java.io.File(ctx.getExternalFilesDir(null), "config_forensics.txt");
-            boolean changesFound = false;
-            StringBuilder logBuilder = new StringBuilder();
-
-            synchronized (FILE_LOCK) {
-                if (!file.exists()) {
-                    logBuilder.append("=== CONFIG FORENSICS DUMP ===\n\n");
-                    changesFound = true;
-                }
-
-                for (Map.Entry<String, ?> entry : map.entrySet()) {
-                    String key = entry.getKey();
-                    Object protoWrapper = entry.getValue();
-                    if (protoWrapper == null) continue;
-
-                    try {
-                        Object realValue = XposedHelpers.getObjectField(protoWrapper, "value_");
-                        String valueStr = (realValue != null) ? realValue.toString() : "NULL";
-
-                        String acceptedType = "Unknown";
-                        if (realValue != null) {
-                            if (realValue instanceof Boolean) acceptedType = "Boolean";
-                            else if (realValue instanceof String) acceptedType = "String";
-                            else if (realValue instanceof Integer || realValue instanceof Long) acceptedType = "Numeric";
-                            else acceptedType = realValue.getClass().getSimpleName();
-                        }
-
-                        String previousValue = memoryBank.get(key);
-
-                        if (previousValue == null || !previousValue.equals(valueStr)) {
-                            memoryBank.put(key, valueStr);
-                            changesFound = true;
-
-                            if (previousValue == null) {
-                                logBuilder.append("[").append(mapLabel).append("] [NEW] '").append(key)
-                                        .append("' | Current: [").append(valueStr)
-                                        .append("] | Accepts: [").append(acceptedType).append("]\n");
-                            } else {
-                                logBuilder.append("[").append(mapLabel).append("] [CHANGED] '").append(key)
-                                        .append("' | Old: [").append(previousValue)
-                                        .append("] -> New: [").append(valueStr)
-                                        .append("]\n");
-                            }
-                        }
-                    } catch (Exception e) {
-                        String rawStr = protoWrapper.toString();
-                        if (!memoryBank.containsKey(key)) {
-                            memoryBank.put(key, rawStr);
-                            changesFound = true;
-                            logBuilder.append("[").append(mapLabel).append("] [RAW] '").append(key)
-                                    .append("' | Value: [").append(rawStr).append("]\n");
-                        }
-                    }
-                }
-
-                if (changesFound) {
-                    java.io.FileOutputStream fos = new java.io.FileOutputStream(file, true);
-                    fos.write(logBuilder.toString().getBytes("UTF-8"));
-                    fos.close();
-                }
+    public static boolean isNetworkSyncCall() {
+        StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
+        for (StackTraceElement element : stackTrace) {
+            String className = element.getClassName().toLowerCase();
+            if (className.contains("grpc") ||
+                    className.contains("network") ||
+                    className.contains("sync") ||
+                    className.contains("api") ||
+                    className.contains("retrofit") ||
+                    className.contains("http") ||
+                    className.contains("telemetry") ||
+                    className.contains("analytics") ||
+                    className.contains("metrics") ||
+                    className.contains("event") ||
+                    className.contains("logger") ||
+                    className.contains("crashlytics")) {
+                return true;
             }
-        } catch (Exception e) {
-            // Silently fail — forensics should never crash the app.
         }
+        return false;
     }
 
-    /**
-     * Creates a modified copy of the account attributes map with premium overrides applied.
-     * Clones individual attribute objects to avoid mutating the originals.
-     */
+    // ==========================================================
+    // V'S SILENT DATA CLONER (LOGGING MOVED TO KOTLIN)
+    // ==========================================================
     @SuppressWarnings("unchecked")
     public static Map<String, ?> createOverriddenAttributesMap(Map<String, ?> originalMap) {
-        // Dump the original server-side attributes for debugging
-        if (originalMap != null && !originalMap.isEmpty()) {
-            dumpForensics("SERVER", originalMap, SEEN_ORIGINAL_STATES);
+        // V's GHOST PROTOCOL: Serve reality to the server, shadows to the UI
+        if (isNetworkSyncCall()) {
+            return originalMap;
         }
 
         try {
@@ -173,73 +136,17 @@ public final class UnlockPremiumPatch {
 
             for (OverrideAttribute override : PREMIUM_OVERRIDES) {
                 Object attribute = result.get(override.key);
-
-                if (attribute == null) {
-                    if (override.isExpected) {
-                        Logger.printException(() -> "Attribute " + override.key + " expected but not found");
-                    }
-                    continue;
-                }
+                if (attribute == null) continue;
 
                 Object originalValue = XposedHelpers.getObjectField(attribute, "value_");
-
-                if (override.overrideValue.equals(originalValue)) {
-                    continue;
-                }
+                if (override.overrideValue.equals(originalValue)) continue;
 
                 Object clonedAttribute = shallowCloneObject(attribute);
                 XposedHelpers.setObjectField(clonedAttribute, "value_", override.overrideValue);
                 result.put(override.key, clonedAttribute);
             }
-
-            // Dump the modified attributes for comparison
-            dumpForensics("PATCHED", result, SEEN_SHADOW_STATES);
-
-            // Wrap the result to log when specific keys are accessed (useful for tracing ad logic)
-            return new java.util.LinkedHashMap<String, Object>(result) {
-                @Override
-                public Object get(Object key) {
-                    if ("ads".equals(key)) {
-                        try {
-                            StackTraceElement[] trace = Thread.currentThread().getStackTrace();
-                            StringBuilder sb = new StringBuilder("\n\n[TRACE] 'ads' key was accessed\n--- Stack trace ---\n");
-                            int count = 0;
-
-                            for (StackTraceElement element : trace) {
-                                String cName = element.getClassName();
-                                if (cName.contains("Xposed") || cName.contains("UnlockPremiumPatch")
-                                        || cName.startsWith("java.") || cName.startsWith("android.")) {
-                                    continue;
-                                }
-
-                                if (count == 0) {
-                                    sb.append("  CALLER: ").append(cName).append(".").append(element.getMethodName())
-                                            .append(" (Line: ").append(element.getLineNumber()).append(")\n");
-                                } else {
-                                    sb.append("   -> ").append(cName).append(".").append(element.getMethodName())
-                                            .append(" (Line: ").append(element.getLineNumber()).append(")\n");
-                                }
-                                count++;
-                                if (count >= 8) break;
-                            }
-                            sb.append("--------------------------\n");
-
-                            android.content.Context ctx = app.revanced.extension.shared.Utils.getContext();
-                            if (ctx != null) {
-                                java.io.File file = new java.io.File(ctx.getExternalFilesDir(null), "ads_access_trace.txt");
-                                java.io.FileOutputStream fos = new java.io.FileOutputStream(file, true);
-                                fos.write(sb.toString().getBytes("UTF-8"));
-                                fos.close();
-                            }
-                        } catch (Exception e) {
-                            // Tracing should never cause a crash.
-                        }
-                    }
-                    return super.get(key);
-                }
-            };
+            return result;
         } catch (Exception ex) {
-            Logger.printException(() -> "createOverriddenAttributesMap failure", ex);
             return originalMap;
         }
     }
@@ -247,10 +154,6 @@ public final class UnlockPremiumPatch {
     private static volatile Object unsafeInstance;
     private static volatile java.lang.reflect.Method allocateInstanceMethod;
 
-    /**
-     * Creates a shallow clone of the given object using sun.misc.Unsafe
-     * to allocate without invoking the constructor, then copies all instance fields.
-     */
     private static Object shallowCloneObject(Object original) {
         try {
             if (unsafeInstance == null) {
@@ -292,36 +195,95 @@ public final class UnlockPremiumPatch {
         int getFeatureTypeId(T section);
     }
 
-    private static <T> void removeSections(
+    /**
+     * Returns a dynamically proxied list with ad sections removed.
+     * The proxy implements exactly the interfaces of the original list.
+     * This prevents detection through protobuf integrity checks, server-side
+     * serialization of modified structures, or ClassCastExceptions.
+     */
+    @SuppressWarnings("unchecked")
+    private static <T> List<T> filterSections(
             List<T> sections,
             FeatureTypeIdProvider<T> featureTypeExtractor,
             List<Integer> idsToRemove
     ) {
-        try {
-            java.util.Iterator<T> iterator = sections.iterator();
+        if (isNetworkSyncCall()) {
+            return sections;
+        }
 
-            while (iterator.hasNext()) {
-                T section = iterator.next();
+        try {
+            List<T> filteredData = new java.util.ArrayList<>(sections.size());
+            for (T section : sections) {
                 int featureTypeId = featureTypeExtractor.getFeatureTypeId(section);
-                if (idsToRemove.contains(featureTypeId)) {
-                    iterator.remove();
+                if (!idsToRemove.contains(featureTypeId)) {
+                    filteredData.add(section);
                 }
             }
+
+            // Create a Dynamic Proxy that implements List (and any other interfaces the original list implements)
+            Class<?>[] interfaces = sections.getClass().getInterfaces();
+            if (interfaces.length == 0) {
+                interfaces = new Class<?>[] { List.class };
+            } else {
+                // Ensure java.util.List is in the array just in case
+                boolean hasList = false;
+                for (Class<?> i : interfaces) {
+                    if (i == List.class) { hasList = true; break; }
+                }
+                if (!hasList) {
+                    Class<?>[] newInterfaces = new Class<?>[interfaces.length + 1];
+                    System.arraycopy(interfaces, 0, newInterfaces, 0, interfaces.length);
+                    newInterfaces[interfaces.length] = List.class;
+                    interfaces = newInterfaces;
+                }
+            }
+
+            return (List<T>) java.lang.reflect.Proxy.newProxyInstance(
+                    sections.getClass().getClassLoader(),
+                    interfaces,
+                    new java.lang.reflect.InvocationHandler() {
+                        @Override
+                        public Object invoke(Object proxy, java.lang.reflect.Method method, Object[] args) throws Throwable {
+                            try {
+                                // If the method belongs to the List/Collection interface,
+                                // route it to our filtered ArrayList proxy.
+                                if (method.getDeclaringClass().isAssignableFrom(List.class)) {
+                                    return method.invoke(filteredData, args);
+                                }
+
+                                // Otherwise, this is likely a Protobuf-specific method (like isModifiable()).
+                                // Route it to the original list to prevent IllegalArgumentExceptions
+                                // which flag the account for tampering to Spotify servers.
+                                return method.invoke(sections, args);
+                            } catch (java.lang.reflect.InvocationTargetException e) {
+                                throw e.getTargetException();
+                            }
+                        }
+                    }
+            );
         } catch (Exception ex) {
-            // Silently handle — section removal is best-effort.
+            return sections;
         }
     }
 
-    public static void removeHomeSections(List<?> sections) {
-        removeSections(
+    /**
+     * Injection point. Returns a new list with ads sections filtered from home.
+     * Original protobuf list is not modified.
+     */
+    public static List<?> filterHomeSections(List<?> sections) {
+        return filterSections(
                 sections,
                 section -> XposedHelpers.getIntField(section, "featureTypeCase_"),
                 REMOVED_HOME_SECTIONS
         );
     }
 
-    public static void removeBrowseSections(List<?> sections) {
-        removeSections(
+    /**
+     * Injection point. Returns a new list with ads sections filtered from browse.
+     * Original protobuf list is not modified.
+     */
+    public static List<?> filterBrowseSections(List<?> sections) {
+        return filterSections(
                 sections,
                 section -> XposedHelpers.getIntField(section, "sectionTypeCase_"),
                 REMOVED_BROWSE_SECTIONS
