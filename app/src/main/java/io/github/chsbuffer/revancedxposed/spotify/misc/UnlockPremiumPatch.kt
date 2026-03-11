@@ -30,7 +30,19 @@ import android.os.Looper
 import android.widget.Toast
 import java.nio.charset.StandardCharsets
 import android.content.Intent
-
+import android.app.Activity
+import android.app.Application
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.os.Bundle
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.TextView
+import java.io.RandomAccessFile
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 object VLogger {
     private const val TAG = "V-DEEP-CORE"
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
@@ -65,6 +77,534 @@ object VLogger {
 
 private fun ByteArray.toHexDumpShort(): String {
     return joinToString(" ") { String.format("%02X", it) }
+}
+
+object VNativeSurgeon {
+    fun patchAndVerify(libraryName: String, offset: Long, expectedOriginalHex: String, newHex: String): Boolean {
+        val cleanExpected = expectedOriginalHex.replace(" ", "").uppercase()
+        val cleanNew = newHex.replace(" ", "").uppercase()
+        val shortOffset = "0x${offset.toString(16)}"
+
+        VLogger.log("[V-SURGEON] 🪚 Preparing to slice $libraryName at offset $shortOffset")
+
+        if (!isArm64()) {
+            VLogger.log("[V-SURGEON] 🛑 ABORT: Not ARM64.")
+            return false
+        }
+
+        val baseAddress = getModuleExecutableBase(libraryName)
+        if (baseAddress == 0L) {
+            VLogger.log("[V-SURGEON] ❌ ABORT: $libraryName executable base not found.")
+            return false
+        }
+
+        val targetAddress = baseAddress + offset
+        val patchBytes = hexStringToByteArray(cleanNew)
+
+        // --- PRE-OP CHECK ---
+        val currentBytes = readMemory(targetAddress, patchBytes.size)
+        if (currentBytes == null) {
+            VLogger.log("[V-SURGEON] ❌ ABORT: Could not read memory at $shortOffset.")
+            VLogger.toast("V-Surgeon: Cannot read memory at $shortOffset") // 🍞 TOAST
+            return false
+        }
+
+        val currentHex = currentBytes.toHexString()
+
+        if (currentHex == cleanNew) {
+            VLogger.log("[V-SURGEON] ⚡ SUCCESS: Target is already patched! ($currentHex)")
+            return true
+        }
+
+        if (cleanExpected != "FILL_ME_IN" && currentHex != cleanExpected) {
+            VLogger.log("[V-SURGEON] 🛑 ABORT: Offset shifted! Expected [$cleanExpected] but found [$currentHex].")
+            VLogger.toast("V-Surgeon: Offset shifted at $shortOffset!") // 🍞 TOAST
+            return false
+        } else if (cleanExpected == "FILL_ME_IN") {
+            VLogger.log("[V-SURGEON] ⚠️ UNKNOWN EXPECTED BYTES! Please update your code with found bytes: [$currentHex]")
+            // We won't toast here since you intentionally left it blank to find the bytes
+            return false
+        }
+
+        // --- THE INCISION ---
+        if (!patchMemory(targetAddress, patchBytes)) {
+            VLogger.log("[V-SURGEON] ❌ ERROR: patchMemory function failed.")
+            VLogger.toast("V-Surgeon: patchMemory failed at $shortOffset") // 🍞 TOAST
+            return false
+        }
+
+        // --- POST-OP VERIFICATION ---
+        val verifyBytes = readMemory(targetAddress, patchBytes.size)
+        val verifyHex = verifyBytes?.toHexString() ?: "READ_FAILED"
+
+        if (verifyHex == cleanNew) {
+            VLogger.log("[V-SURGEON] 🟢 VERIFIED: Injection successful at $shortOffset -> $verifyHex")
+            return true
+        } else {
+            VLogger.log("[V-SURGEON] 🔴 FAILED: Suture didn't hold. Found: $verifyHex")
+            VLogger.toast("V-Surgeon: Write blocked at $shortOffset!") // 🍞 TOAST
+            return false
+        }
+    }
+
+    private fun hexStringToByteArray(s: String): ByteArray {
+        val len = s.length
+        val data = ByteArray(len / 2)
+        var i = 0
+        while (i < len) {
+            data[i / 2] = ((Character.digit(s[i], 16) shl 4) + Character.digit(s[i + 1], 16)).toByte()
+            i += 2
+        }
+        return data
+    }
+
+    // 🗡️ The Laser Scalpel: Direct RAM Access Bypass
+    private val unsafe: Any? by lazy {
+        try {
+            val unsafeClass = Class.forName("sun.misc.Unsafe")
+            val f: Field = unsafeClass.getDeclaredField("theUnsafe")
+            f.isAccessible = true
+            f.get(null)
+        } catch (e: Exception) {
+            VLogger.log("[V-NATIVE] 💥 Failed to initialize sun.misc.Unsafe: ${e.message}")
+            null
+        }
+    }
+
+    private val getByteMethod by lazy {
+        unsafe?.javaClass?.getMethod("getByte", Long::class.javaPrimitiveType)
+    }
+
+    private val putByteMethod by lazy {
+        unsafe?.javaClass?.getMethod("putByte", Long::class.javaPrimitiveType, Byte::class.javaPrimitiveType)
+    }
+
+    fun readMemory(address: Long, size: Int): ByteArray? {
+        if (address == 0L || size <= 0 || unsafe == null || getByteMethod == null) return null
+        return try {
+            val buffer = ByteArray(size)
+            for (i in 0 until size) {
+                buffer[i] = getByteMethod!!.invoke(unsafe, address + i) as Byte
+            }
+            buffer
+        } catch (e: Exception) {
+            VLogger.log("[V-NATIVE] 💥 Unsafe readMemory failed: ${e.message}")
+            null
+        }
+    }
+
+    fun patchMemory(address: Long, patch: ByteArray): Boolean {
+        if (address == 0L || patch.isEmpty() || unsafe == null || putByteMethod == null) return false
+
+        try {
+            val pageSize = 4096L // Standard ARM64 page size
+            val pageStart = address - (address % pageSize)
+            // Ensure we calculate alignment correctly if patch crosses page boundaries
+            val alignLength = ((address + patch.size - pageStart + pageSize - 1) / pageSize) * pageSize
+
+            val PROT_RW = 3 // READ | WRITE
+            val PROT_RX = 5 // READ | EXECUTE
+
+            // 1. Force mprotect via XposedHelpers.
+            // Because the .so is mapped as MAP_PRIVATE, granting it PROT_RW forces the Kernel
+            // to trigger a Copy-On-Write (COW), decoupling it from the physical file safely.
+            try {
+                val osClass = XposedHelpers.findClass("android.system.Os", this::class.java.classLoader)
+                XposedHelpers.callStaticMethod(osClass, "mprotect", pageStart, alignLength, PROT_RW)
+            } catch (e: Exception) {
+                // If this fails, SELinux is aggressively blocking COW on executable memory.
+                VLogger.log("[V-NATIVE] 🛑 Kernel denied mprotect(RW): ${e.cause?.message ?: e.message}")
+                return false
+            }
+
+            // 2. Inject bytes directly into RAM
+            for (i in patch.indices) {
+                putByteMethod!!.invoke(unsafe, address + i, patch[i])
+            }
+
+            // 3. Restore RX
+            try {
+                val osClass = XposedHelpers.findClass("android.system.Os", this::class.java.classLoader)
+                XposedHelpers.callStaticMethod(osClass, "mprotect", pageStart, alignLength, PROT_RX)
+            } catch (e: Exception) {
+                VLogger.log("[V-NATIVE] ⚠️ Failed to restore RX lock. Execution might fault.")
+            }
+
+            VLogger.log("[V-NATIVE] 💉 SUCCESS: Spliced ${patch.size} bytes at 0x${address.toString(16)}")
+            return true
+
+        } catch (e: Exception) {
+            VLogger.log("[V-NATIVE] 💥 Patch logic failed: ${e.message}")
+            return false
+        }
+    }
+
+    fun isArm64(): Boolean {
+        return Build.SUPPORTED_ABIS.contains("arm64-v8a")
+    }
+
+    fun getModuleExecutableBase(libName: String): Long {
+        try {
+            val maps = File("/proc/self/maps").readLines()
+            for (line in maps) {
+                if (line.contains(libName) && line.contains("r-xp")) {
+                    val base = line.substringBefore("-").toLong(16)
+                    VLogger.log("[V-NATIVE] 📍 Found executable base for $libName at 0x${base.toString(16)}")
+                    return base
+                }
+            }
+        } catch (e: Exception) {
+            VLogger.log("[V-NATIVE] 💥 Maps parsing failed: ${e.message}")
+        }
+        return 0L
+    }
+}
+
+// ==========================================
+// === NATIVE UTILS (ATOMIC SHADOW MAP) =====
+// ==========================================
+object NativeUtils {
+
+    private val unsafe: Any? by lazy {
+        try {
+            val unsafeClass = Class.forName("sun.misc.Unsafe")
+            val f: Field = unsafeClass.getDeclaredField("theUnsafe")
+            f.isAccessible = true
+            f.get(null)
+        } catch (e: Exception) { null }
+    }
+
+    fun readOriginalBytes(address: Long, size: Int): String {
+        // Reference VNativeSurgeon specifically
+        val bytes = VNativeSurgeon.readMemory(address, size) ?: return "READ_FAILED"
+        return bytes.toHexString()
+    }
+
+    // Standard ARM64 NOP (No Operation)
+    const val NOP = "1F2003D5"
+    // Standard ARM64 RET (Return)
+    const val RET = "C0035FD6"
+
+    private val getByteMethod by lazy {
+        unsafe?.javaClass?.getMethod("getByte", Long::class.javaPrimitiveType)
+    }
+
+    fun atomicShadowPatch(address: Long, patch: ByteArray): Boolean {
+        if (address == 0L || patch.isEmpty() || unsafe == null || getByteMethod == null) return false
+
+        try {
+            val pageSize = 4096L // Standard ARM64 page size
+            val pageStart = address - (address % pageSize)
+            val patchOffset = (address - pageStart).toInt()
+
+            // --- 1. READ LIVE PAGE ---
+            // W^X does not block reads. We clone the live executing page seamlessly.
+            val pageBytes = ByteArray(pageSize.toInt())
+            for (i in 0 until pageSize.toInt()) {
+                pageBytes[i] = getByteMethod!!.invoke(unsafe, pageStart + i) as Byte
+            }
+
+            // --- 2. APPLY SURGERY LOCALLY ---
+            for (i in patch.indices) {
+                pageBytes[patchOffset + i] = patch[i]
+            }
+
+            // --- 3. CREATE SHADOW FILE ---
+            // This satisfies SELinux's strict requirement that executable memory must be file-backed.
+            val context = Utils.getContext() ?: return false
+            val shadowFile = File(context.cacheDir, "v_shadow_${address.toString(16)}.bin")
+            shadowFile.writeBytes(pageBytes)
+
+            val fis = java.io.FileInputStream(shadowFile)
+            val fd = fis.fd
+
+            val PROT_RX = OsConstants.PROT_READ or OsConstants.PROT_EXEC
+            val MAP_PRIVATE = OsConstants.MAP_PRIVATE
+            val MAP_FIXED = 0x10 // Magic flag: Force overwrite the live memory page
+
+            // --- 4. THE ATOMIC PTE SWAP ---
+            // The Kernel instantly swaps the Page Table Entry to point to our file.
+            // It completely bypasses W^X because we are mapping it as PROT_RX directly.
+            val mappedAddr = Os.mmap(
+                pageStart,
+                pageSize,
+                PROT_RX,
+                MAP_PRIVATE or MAP_FIXED,
+                fd,
+                0
+            )
+
+            fis.close()
+
+            if (mappedAddr == pageStart) {
+                return true
+            } else {
+                VLogger.log("[V-ATOMIC] ❌ Kernel shifted MAP_FIXED address to 0x${mappedAddr.toString(16)}")
+                return false
+            }
+
+        } catch (e: Exception) {
+            VLogger.log("[V-ATOMIC] 💥 Atomic shadow patch failed: ${e.message}")
+            return false
+        }
+    }
+}
+
+/**
+ * V'S GHOST BUFFER DREDGER (SELINUX BYPASS)
+ * Forges a native ByteBuffer over raw RAM to bypass /proc/self/mem restrictions.
+ */
+fun performStringManglingSurgeon() {
+    VLogger.log("[V-ATOMIC] 👻 Initiating Ghost Buffer Dredger (SELinux Bypass)...")
+    var mangledCount = 0
+    var controlGroupFound = 0
+
+    val adStrings = listOf(
+        // 🎯 THE ESSENTIAL KILLSHOTS (Cosmos Endpoints)
+        // Mangling these causes the internal router to return 404 Not Found
+        // to the ad engine, which it handles gracefully without crashing.
+        "core-ads",
+        "video-ads",
+        "audio-ads",
+
+        // 🎯 THE CONFIG KILLSHOT
+        // From your C++ dump. If we mangle this, the app asks the server for "Xax_ads".
+        // The server won't recognize it and will return null, giving you infinite skips.
+        "max_ads"
+    )
+
+    // 🗡️ Helper to forge the Ghost Buffer
+    fun createGhostBuffer(address: Long, size: Int): ByteBuffer? {
+        return try {
+            val bb = ByteBuffer.allocateDirect(0).order(ByteOrder.nativeOrder())
+            de.robv.android.xposed.XposedHelpers.setLongField(bb, "address", address)
+            de.robv.android.xposed.XposedHelpers.setIntField(bb, "capacity", size)
+            de.robv.android.xposed.XposedHelpers.setIntField(bb, "limit", size)
+            bb
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    try {
+        val maps = File("/proc/self/maps").readLines()
+        val readableMaps = maps.filter {
+            (it.contains("liborbit") || it.contains("libspotify") || it.contains("libesperanto")) &&
+                    it.contains(".so") &&
+                    (it.contains("r--p") || it.contains("r-xp") || it.contains("rw-p"))
+        }
+
+        VLogger.log("[V-ATOMIC] Dredging ${readableMaps.size} native memory segments via Ghost Buffers...")
+
+        for (mapLine in readableMaps) {
+            try {
+                val addressRange = mapLine.substringBefore(" ")
+                val startAddr = addressRange.substringBefore("-").toLong(16)
+                val endAddr = addressRange.substringAfter("-").toLong(16)
+                val size = (endAddr - startAddr).toInt()
+                val libName = mapLine.substringAfterLast("/")
+
+                if (size > 50_000_000 || size <= 0) continue // Skip bad mappings
+
+                // Forge the buffer and rip the memory instantly into Java
+                val ghostBuffer = createGhostBuffer(startAddr, size) ?: continue
+                val buffer = ByteArray(size)
+
+                try {
+                    // This acts as a native C memcpy. Instant bulk read, zero OS file checks!
+                    ghostBuffer.get(buffer)
+                } catch (e: Exception) {
+                    VLogger.log("[V-ATOMIC] ⚠️ Page fault reading $libName at 0x${startAddr.toString(16)}. Skipping.")
+                    continue
+                }
+
+                // Scan the ripped memory
+                for (targetString in adStrings) {
+                    val targetBytes = targetString.toByteArray()
+                    var index = indexOfSubArray(buffer, targetBytes, 0)
+
+                    while (index != -1) {
+                        val exactStringAddress = startAddr + index
+
+                        if (targetString == "spotify") {
+                            controlGroupFound++
+                        } else {
+                            VLogger.log("[V-ATOMIC] 🎯 FOUND AD STRING: '$targetString' in $libName @ 0x${exactStringAddress.toString(16)}")
+
+                            val patchByte = byteArrayOf(0x58.toByte()) // 'X'
+                            if (NativeUtils.atomicShadowPatch(exactStringAddress, patchByte)) {
+                                mangledCount++
+                                VLogger.log("[V-ATOMIC] 💉 Mangled successfully!")
+                            }
+                        }
+                        index = indexOfSubArray(buffer, targetBytes, index + 1)
+                    }
+                }
+            } catch (e: Exception) {
+                // Skip errors on specific blocks
+            }
+        }
+
+        VLogger.log("[V-ATOMIC] Scan complete. Control Group ('spotify') found $controlGroupFound times.")
+
+        if (mangledCount > 0) {
+            VLogger.toast("V-Surgeon: Mangled $mangledCount strings! 👑")
+        } else if (controlGroupFound > 0) {
+            VLogger.toast("V-Surgeon: Bypass successful, but Ads are hidden!")
+            VLogger.log("[V-ATOMIC] ⚠️ We read the memory successfully, but no ad strings were found.")
+        } else {
+            VLogger.toast("V-Surgeon: Ghost Buffer Failed.")
+            VLogger.log("[V-ATOMIC] ❌ Memory is completely randomized or zeroed out.")
+        }
+
+    } catch (e: Exception) {
+        VLogger.log("[V-ATOMIC] ❌ Critical Error: ${e.stackTraceToString()}")
+    }
+}
+
+private fun indexOfSubArray(outerArray: ByteArray, smallerArray: ByteArray, startIndex: Int): Int {
+    if (smallerArray.isEmpty()) return -1
+    for (i in startIndex..outerArray.size - smallerArray.size) {
+        var found = true
+        for (j in smallerArray.indices) {
+            if (outerArray[i + j] != smallerArray[j]) {
+                found = false
+                break
+            }
+        }
+        if (found) return i
+    }
+    return -1
+}
+// ====================================================================
+// V'S ANONYMOUS PAGE SWAP (THE ULTIMATE KNOX BYPASS)
+// ====================================================================
+fun SpotifyHook.InstallAnonymousPageMangler() {
+    android.util.Log.e("V-MANGLER", "🧨 V: INITIATING ANONYMOUS PAGE SWAP 🧨")
+
+    Thread {
+        try {
+            // Give Spotify 4 seconds to fully boot and unpack its libraries
+            Thread.sleep(4000)
+
+            val target = "core-ads".toByteArray()
+            val replacement = "Xore-ads".toByteArray()
+
+            // Unsafe RAM Access
+            val unsafeClass = Class.forName("sun.misc.Unsafe")
+            val f: Field = unsafeClass.getDeclaredField("theUnsafe")
+            f.isAccessible = true
+            val unsafe = f.get(null)
+            val getByteMethod = unsafe.javaClass.getMethod("getByte", Long::class.javaPrimitiveType)
+            val putByteMethod = unsafe.javaClass.getMethod("putByte", Long::class.javaPrimitiveType, Byte::class.javaPrimitiveType)
+
+            // Find the core native libraries
+            val maps = File("/proc/self/maps").readLines().filter {
+                (it.contains("orbit") || it.contains("spotify") || it.contains("esperanto")) &&
+                        it.contains(".so") && (it.contains("r--p") || it.contains("r-xp"))
+            }
+
+            var mangled = 0
+
+            for (mapLine in maps) {
+                val addressRange = mapLine.substringBefore(" ")
+                val startAddr = addressRange.substringBefore("-").toLong(16)
+                val endAddr = addressRange.substringAfter("-").toLong(16)
+                val size = (endAddr - startAddr).toInt()
+
+                if (size > 50_000_000 || size <= 0) continue
+
+                // 1. Safe Read: Clone the live memory into a buffer
+                val buffer = ByteArray(size)
+                try {
+                    for (i in 0 until size) {
+                        buffer[i] = getByteMethod.invoke(unsafe, startAddr + i) as Byte
+                    }
+                } catch (e: Exception) { continue } // Skip unreadable pages silently
+
+                // 2. Hunt for the exact string "core-ads"
+                var index = 0
+                while (index <= buffer.size - target.size) {
+                    var match = true
+                    for (j in target.indices) {
+                        if (buffer[index + j] != target[j]) { match = false; break }
+                    }
+
+                    if (match) {
+                        val exactAddress = startAddr + index
+                        android.util.Log.e("V-MANGLER", "🎯 FOUND 'core-ads' @ 0x${exactAddress.toString(16)}")
+
+                        // --- 3. THE ANONYMOUS PAGE SWAP ---
+                        val PAGE_SIZE = 4096L
+                        val pageStart = exactAddress - (exactAddress % PAGE_SIZE)
+
+                        // Backup the entire original memory page
+                        val pageBackup = ByteArray(PAGE_SIZE.toInt())
+                        for (i in 0 until PAGE_SIZE.toInt()) {
+                            pageBackup[i] = getByteMethod.invoke(unsafe, pageStart + i) as Byte
+                        }
+
+                        // Mangle our backup in safe Java space
+                        val offsetInPage = (exactAddress - pageStart).toInt()
+                        for (j in replacement.indices) {
+                            pageBackup[offsetInPage + j] = replacement[j]
+                        }
+
+                        // Forge an invalid FileDescriptor (-1) required for Anonymous RAM mappings
+                        val fd = java.io.FileDescriptor()
+                        val descriptorField = fd.javaClass.getDeclaredField("descriptor")
+                        descriptorField.isAccessible = true
+                        descriptorField.set(fd, -1)
+
+                        val MAP_ANONYMOUS = 0x20 // Standard Linux flag for pure RAM mapping
+
+                        // 💥 VIOLENT OVERWRITE: Rip out the file-backed page and slam our RAM page into the exact same slot
+                        val mappedAddr = Os.mmap(
+                            pageStart,
+                            PAGE_SIZE,
+                            OsConstants.PROT_READ or OsConstants.PROT_WRITE,
+                            OsConstants.MAP_PRIVATE or OsConstants.MAP_FIXED or MAP_ANONYMOUS,
+                            fd,
+                            0
+                        )
+
+                        if (mappedAddr == pageStart) {
+                            // Inject our mangled backup into the new stealth page
+                            for (i in 0 until PAGE_SIZE.toInt()) {
+                                putByteMethod.invoke(unsafe, pageStart + i, pageBackup[i])
+                            }
+
+// Force explicit primitive types using strict Java reflection
+                            val mprotectMethod = android.system.Os::class.java.getDeclaredMethod(
+                                "mprotect",
+                                Long::class.javaPrimitiveType,
+                                Long::class.javaPrimitiveType,
+                                Int::class.javaPrimitiveType
+                            )
+                            mprotectMethod.isAccessible = true
+                            mprotectMethod.invoke(null, pageStart, PAGE_SIZE, android.system.OsConstants.PROT_READ)
+
+                            mangled++
+                            android.util.Log.e("V-MANGLER", "🩸 'core-ads' brutally mangled to 'Xore-ads' (Hardware Trap Bypassed!)")
+                        } else {
+                            android.util.Log.e("V-MANGLER", "❌ Kernel rejected anonymous swap.")
+                        }
+                        index += target.size
+                    } else {
+                        index++
+                    }
+                }
+            }
+
+            android.util.Log.e("V-MANGLER", "🏁 Total 'core-ads' strings slaughtered: $mangled")
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                android.widget.Toast.makeText(app, "V: Mangled $mangled 'core-ads' strings! 🩸", android.widget.Toast.LENGTH_LONG).show()
+            }
+
+        } catch (e: Exception) {
+            android.util.Log.e("V-MANGLER", "💥 Fatal Error: ${e.message}")
+        }
+    }.start()
 }
 
 object ProtobufAttributeScanner {
@@ -134,16 +674,6 @@ fun SpotifyHook.InstallUIPlayDeflection() {
     }
 }
 
-fun SpotifyHook.InstallWorkingProductStateHook() {
-    VLogger.log("=== Product State Hook Activated ===")
-
-    ::productStateProtoFingerprint.hookMethod {
-        after { param ->
-            val originalMap = param.result as? Map<String, *> ?: return@after
-            param.result = UnlockPremiumPatch.createOverriddenAttributesMap(originalMap)
-        }
-    }
-}
 
 fun SpotifyHook.InstallWorkingAdsRemoval() {
     VLogger.log("=== Ads Removal Activated ===")
@@ -152,10 +682,13 @@ fun SpotifyHook.InstallWorkingAdsRemoval() {
         after { param ->
             try {
                 val sections = param.result ?: return@after
+                // Keep the modifiable flag flip just in case the app checks it before our proxy intercepts
                 sections.javaClass.findFirstFieldByExactType(Boolean::class.java).set(sections, true)
-                UnlockPremiumPatch.removeHomeSections(sections as MutableList<*>)
+
+                // Route the original list through our stealth proxy and hand it back to the app
+                param.result = UnlockPremiumPatch.filterHomeSections(sections as List<*>)
             } catch (e: Exception) {
-                VLogger.log("[HOME-CLEANER] Failed to mutate list: ${e.message}")
+                VLogger.log("[HOME-CLEANER] Failed to filter list: ${e.message}")
             }
         }
     }
@@ -165,9 +698,11 @@ fun SpotifyHook.InstallWorkingAdsRemoval() {
             try {
                 val sections = param.result ?: return@after
                 sections.javaClass.findFirstFieldByExactType(Boolean::class.java).set(sections, true)
-                UnlockPremiumPatch.removeBrowseSections(sections as MutableList<*>)
+
+                // Route the original list through our stealth proxy and hand it back to the app
+                param.result = UnlockPremiumPatch.filterBrowseSections(sections as List<*>)
             } catch (e: Exception) {
-                VLogger.log("[BROWSE-CLEANER] Failed to mutate list: ${e.message}")
+                VLogger.log("[BROWSE-CLEANER] Failed to filter list: ${e.message}")
             }
         }
     }
@@ -774,76 +1309,6 @@ fun SpotifyHook.InstallFinalBossAssassin() {
     }
 }
 
-fun SpotifyHook.InstallArtistPageRestorer() {
-    Log.e("V_SONAR", "=== Artist Page Restorer Activated ===")
-
-    val configClasses = listOf(
-        "com.spotify.remoteconfig.internal.ProductStateProto",
-        "com.spotify.remoteconfig.ConfigResponse"
-    )
-
-    configClasses.forEach { className ->
-        val clazz = XposedHelpers.findClassIfExists(className, classLoader) ?: return@forEach
-
-        clazz.declaredMethods.filter { it.returnType == String::class.java }.forEach { method ->
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val result = param.result as? String ?: return
-                    if (result == "SHUFFLE_ONLY" || result == "FREE_TIER_LIMIT" || result == "restricted") {
-                        param.result = "PREMIUM_TIER"
-                        Log.e("V_SONAR", "[CONFIG] Overrode: $result")
-                    }
-                }
-            })
-        }
-
-        clazz.declaredMethods.filter { it.returnType == Boolean::class.java || it.returnType == java.lang.Boolean.TYPE }.forEach { method ->
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val mName = method.name.lowercase()
-                    if (mName.contains("upsell") || mName.contains("restricted") || mName.contains("limit")) {
-                        if (param.result == true) {
-                            param.result = false
-                            Log.e("V_SONAR", "[CONFIG] Overrode boolean: $mName")
-                        }
-                    }
-                }
-            })
-        }
-    }
-
-    val artistClasses = listOf(
-        "com.spotify.music.artist.model.ArtistCapabilities",
-        "com.spotify.music.artist.model.ArtistModel",
-        "com.spotify.hubframework.model.HubModel"
-    )
-
-    artistClasses.forEach { className ->
-        val clazz = XposedHelpers.findClassIfExists(className, classLoader) ?: return@forEach
-
-        clazz.declaredMethods.filter { it.returnType == Boolean::class.java || it.returnType == java.lang.Boolean.TYPE }.forEach { method ->
-            XposedBridge.hookMethod(method, object : XC_MethodHook() {
-                override fun afterHookedMethod(param: MethodHookParam) {
-                    val mName = method.name.lowercase()
-
-                    if (mName.contains("ondemand") || mName.contains("canplay") || mName.contains("premium")) {
-                        if (param.result == false) {
-                            param.result = true
-                            Log.e("V_SONAR", "[ARTIST] Enabled: $mName")
-                        }
-                    }
-
-                    if (mName.contains("shuffleonly") || mName.contains("restricted") || mName.contains("upsell")) {
-                        if (param.result == true) {
-                            param.result = false
-                            Log.e("V_SONAR", "[ARTIST] Disabled: $mName")
-                        }
-                    }
-                }
-            })
-        }
-    }
-}
 
 fun SpotifyHook.InstallDeepLinkAssassin() {
     Log.e("V_SONAR", "=== Deep Link Assassin Activated ===")
@@ -1028,11 +1493,303 @@ fun SpotifyHook.InstallVideoAdForensicsAndKiller() {
     })
 }
 
+// Call this exactly once when the app or your patch initializes
+fun startLockTimer() {
+    Thread {
+        try {
+            // Wait 10 seconds (10,000 milliseconds) for the user to log in and the UI to cache
+            Thread.sleep(10000)
+
+            // Grab the context internally
+            val context = Utils.getContext() ?: return@Thread
+
+            val lockFile = File(context.getExternalFilesDir(null), "v_startup_completed.lock")
+
+            if (!lockFile.exists()) {
+                lockFile.createNewFile()
+            }
+        } catch (e: Exception) {
+            // Silent fail.
+        }
+    }.start()
+}
+
+// ====================================================================
+// V'S KOTLIN LOGGER (LOGCAT + MAP.TXT)
+// ====================================================================
+object VKotlinLogger {
+    fun log(message: String) {
+        // 1. Blast to Logcat
+        android.util.Log.e("V-KOTLIN-TRACE", message)
+
+        // 2. Blast to map.txt
+        try {
+            val ctx = app.revanced.extension.shared.Utils.getContext()
+            val dir = ctx?.getExternalFilesDir(null)
+                ?: java.io.File("/storage/emulated/0/Android/data/com.spotify.music/files")
+
+            if (dir.exists() || dir.mkdirs()) {
+                val time = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+                java.io.File(dir, "map.txt").appendText("[$time] $message\n")
+            }
+        } catch (e: Exception) {
+            // Ignore disk errors to keep the app from crashing
+        }
+    }
+}
+
+// ====================================================================
+// V'S TOTAL RECON & SCHRÖDINGER MAP (UPDATED TARGET LIST)
+// ====================================================================
+class VTotalReconMap(
+    private val originalMap: Map<String, Any?>,
+    private val spoofedMap: Map<String, Any?>
+) : java.util.LinkedHashMap<String, Any?>(spoofedMap) {
+
+    private fun logAndCheckSnitch(action: String, key: String = "N/A"): Boolean {
+        val traceElements = Thread.currentThread().stackTrace
+        var isSnitch = false
+        val traceDump = java.lang.StringBuilder()
+
+        var count = 0
+        for (element in traceElements) {
+            val className = element.className.lowercase()
+            if (className.contains("vtotalreconmap") || className.contains("xposed") ||
+                className.contains("chsbuffer") || className.startsWith("java.") ||
+                className.startsWith("dalvik") || className.startsWith("android.")) {
+                continue
+            }
+
+            traceDump.append("    -> ${element.className}.${element.methodName}(Line: ${element.lineNumber})\n")
+
+            // 🚨 THE KILL-LIST: Added v9e0 based on our recon data!
+            if (className.contains("protobuf") || className.contains("eventsender") ||
+                className.contains("telemetry") || className.contains("cosmos") ||
+                className.contains("remoteconfig") || className.contains("v9e0")) {
+                isSnitch = true
+            }
+
+            count++
+            if (count >= 10) break
+        }
+
+        val snitchStatus = if (isSnitch) "🚨 SNITCH BLOCKED (Returned Free-Tier Data)" else "✅ UI GRANTED (Returned Premium Data)"
+
+        val logMsg = "\n🔍 [MAP ACCESS: $action] Key: $key | $snitchStatus\n$traceDump"
+        VKotlinLogger.log(logMsg) // Writes to Logcat AND map.txt
+
+        return isSnitch
+    }
+
+    override operator fun get(key: String): Any? {
+        val isSnitch = logAndCheckSnitch("GET", key)
+        return if (isSnitch) originalMap[key] else super.get(key)
+    }
+
+    override fun getOrDefault(key: String, defaultValue: Any?): Any? {
+        val isSnitch = logAndCheckSnitch("GET_OR_DEFAULT", key)
+        return if (isSnitch) originalMap.getOrDefault(key, defaultValue) else super.getOrDefault(key, defaultValue)
+    }
+
+    override fun containsKey(key: String): Boolean {
+        val isSnitch = logAndCheckSnitch("CONTAINS_KEY", key)
+        return if (isSnitch) originalMap.containsKey(key) else super.containsKey(key)
+    }
+
+    override val entries: MutableSet<MutableMap.MutableEntry<String, Any?>>
+        get() {
+            val isSnitch = logAndCheckSnitch("ITERATE_ENTRIES")
+            return if (isSnitch) java.util.LinkedHashMap(originalMap).entries else super.entries
+        }
+
+    override val keys: MutableSet<String>
+        get() {
+            val isSnitch = logAndCheckSnitch("ITERATE_KEYS")
+            return if (isSnitch) java.util.LinkedHashMap(originalMap).keys else super.keys
+        }
+
+    override val values: MutableCollection<Any?>
+        get() {
+            val isSnitch = logAndCheckSnitch("ITERATE_VALUES")
+            return if (isSnitch) java.util.LinkedHashMap(originalMap).values else super.values
+        }
+}
+
+// ---------------------------------------------------------
+// THE HOOK
+// ---------------------------------------------------------
+fun SpotifyHook.InstallWorkingProductStateHook() {
+    VKotlinLogger.log("=== Product State Hook Activated (KOTLIN RECON + MAP.TXT) ===")
+
+    ::productStateProtoFingerprint.hookMethod {
+        after { param ->
+            val originalMap = param.result as? Map<String, *> ?: return@after
+
+            val traceElements = Thread.currentThread().stackTrace
+            val traceDump = java.lang.StringBuilder()
+            var count = 0
+            for (element in traceElements) {
+                val className = element.className
+                if (!className.contains("Xposed") && !className.contains("chsbuffer") &&
+                    !className.startsWith("dalvik") && !className.startsWith("java.")) {
+                    traceDump.append("    -> ${element.className}.${element.methodName}(Line: ${element.lineNumber})\n")
+                    count++
+                    if (count >= 10) break
+                }
+            }
+            VKotlinLogger.log("\n⚙️ NEW MAP GENERATED ⚙️\n$traceDump")
+
+            @Suppress("UNCHECKED_CAST")
+            val spoofedMap = UnlockPremiumPatch.createOverriddenAttributesMap(originalMap) as Map<String, Any?>
+
+            param.result = VTotalReconMap(originalMap, spoofedMap)
+        }
+    }
+}
+
+fun SpotifyHook.InstallUiDumperButton() {
+    android.util.Log.e("V-UI-DUMPER", "=== UI Dumper Button Armed ===")
+
+    // Helper function to recursively scrape every view and its properties
+    fun dumpViewHierarchy(view: View, depth: Int, sb: java.lang.StringBuilder) {
+        val indent = "  ".repeat(depth)
+        val className = view.javaClass.name
+
+        // Try to resolve the human-readable XML ID if it has one
+        val idName = try {
+            if (view.id != View.NO_ID && view.resources != null) {
+                view.resources.getResourceEntryName(view.id)
+            } else "NO_ID"
+        } catch (e: Exception) { "UNKNOWN_ID" }
+
+        val visibility = when (view.visibility) {
+            View.VISIBLE -> "VIS"
+            View.INVISIBLE -> "INV"
+            View.GONE -> "GONE"
+            else -> "???"
+        }
+
+        var extraInfo = ""
+        if (view is TextView) {
+            val txt = view.text?.toString()?.replace("\n", "\\n") ?: ""
+            if (txt.isNotEmpty()) extraInfo += " | TEXT: \"$txt\""
+        }
+        if (!view.contentDescription.isNullOrEmpty()) {
+            extraInfo += " | DESC: \"${view.contentDescription}\""
+        }
+        if (view.hasOnClickListeners()) {
+            extraInfo += " [CLICKABLE]"
+        }
+
+        sb.append("$indent-> $className (id: $idName) [$visibility]$extraInfo\n")
+
+        // If it's a layout/group, dive deeper
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) {
+                dumpViewHierarchy(view.getChildAt(i), depth + 1, sb)
+            }
+        }
+    }
+
+    // Attach to the app's lifecycle so the button follows you to every screen
+    app.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
+        override fun onActivityResumed(activity: Activity) {
+            val root = activity.window.decorView as? ViewGroup ?: return
+
+            // Don't add it twice if it's already there
+            if (root.findViewWithTag<View>("V_UI_DUMPER_BTN") != null) return
+
+            val dumperBtn = TextView(activity).apply {
+                tag = "V_UI_DUMPER_BTN"
+                text = "📸 DUMP UI"
+                setTextColor(Color.WHITE)
+                textSize = 12f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                setPadding(30, 20, 30, 20)
+
+                // Hacker red, slightly transparent so it doesn't block the app completely
+                background = GradientDrawable().apply {
+                    cornerRadius = 20f
+                    setColor(Color.parseColor("#CCFF0044")) // 80% opacity red
+                    setStroke(2, Color.WHITE)
+                }
+
+                // Force it to the absolute top of the screen render stack
+                translationZ = 99999f
+                elevation = 99999f
+
+                layoutParams = FrameLayout.LayoutParams(-2, -2).apply {
+                    gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                    topMargin = 150 // Push it down slightly below the status bar
+                }
+
+                setOnClickListener {
+                    Toast.makeText(activity, "V: Ripping UI layout...", Toast.LENGTH_SHORT).show()
+
+                    // Run off the main thread so we don't freeze the app while scraping
+                    Thread {
+                        try {
+                            val sb = java.lang.StringBuilder()
+                            sb.append("=== V'S TACTICAL UI DUMP ===\n")
+                            sb.append("Time: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())}\n\n")
+
+                            // Use WindowManagerGlobal to catch floating menus and dialogs, not just the main Activity
+                            val wmgClass = Class.forName("android.view.WindowManagerGlobal")
+                            val wmg = wmgClass.getMethod("getInstance").invoke(null)
+                            val mViewsField = wmgClass.getDeclaredField("mViews")
+                            mViewsField.isAccessible = true
+
+                            @Suppress("UNCHECKED_CAST")
+                            val rootViews = mViewsField.get(wmg) as List<View>
+
+                            for ((index, windowRoot) in rootViews.withIndex()) {
+                                sb.append("--- WINDOW $index: ${windowRoot.javaClass.simpleName} ---\n")
+                                dumpViewHierarchy(windowRoot, 1, sb)
+                                sb.append("\n")
+                            }
+
+                            // Write directly to your target file
+                            val dir = File("/storage/emulated/0/Android/data/com.spotify.music/files")
+                            if (!dir.exists()) dir.mkdirs()
+                            val dumpFile = File(dir, "view_dump.txt")
+
+                            dumpFile.writeText(sb.toString())
+
+                            Handler(Looper.getMainLooper()).post {
+                                Toast.makeText(activity, "V: Blueprint saved to view_dump.txt!", Toast.LENGTH_LONG).show()
+                            }
+                        } catch (e: Exception) {
+                            Handler(Looper.getMainLooper()).post {
+                                Toast.makeText(activity, "V: Dump failed! ${e.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }.start()
+                }
+            }
+
+            root.addView(dumperBtn)
+        }
+
+        override fun onActivityPaused(activity: Activity) {}
+        override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+        override fun onActivityStarted(activity: Activity) {}
+        override fun onActivityStopped(activity: Activity) {}
+        override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+        override fun onActivityDestroyed(activity: Activity) {}
+    })
+}
+
 @Suppress("UNCHECKED_CAST")
 fun SpotifyHook.UnlockPremium(prefs: de.robv.android.xposed.XSharedPreferences) {
 
     if (prefs.getBoolean("enable_visual_ads_block", true)) {
         InstallVideoAdForensicsAndKiller()
+        InstallWorkingProductStateHook()
+        // InstallLibraryHijacker()
+        InstallAnonymousPageMangler()
+        // performStringManglingSurgeon()
+        // InstallUiDumperButton() ui dumper
+        // startLockTimer()
         InstallFinalBossAssassin()
         InstallScoutLogicSniper()
         InstallGlobalUIAssassin()
@@ -1049,7 +1806,6 @@ fun SpotifyHook.UnlockPremium(prefs: de.robv.android.xposed.XSharedPreferences) 
     }
 
     if (prefs.getBoolean("enable_ui_fixes", true)) {
-        InstallArtistPageRestorer()
         InstallDeepLinkAssassin()
         InstallWorkingAdsRemoval()
         InstallPlayabilityForcer()
