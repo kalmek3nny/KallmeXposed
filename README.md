@@ -9,7 +9,7 @@
 ---
 
 >[!IMPORTANT]
->With my latest patch its been 2 days with no ban, however it seems to only work with new accounts i will do more testing and try to get it to work with old accounts but the patch is almost done
+>Current patch works best with new accounts
 
 > [!WARNING]  
 > **Development Status:** This project is currently in active development. Features are being tested to ensure account safety and stability before the full source is released.
